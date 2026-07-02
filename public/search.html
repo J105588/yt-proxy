@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>YT Proxy - 検索</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0f0f0f;
+            color: white;
+            font-family: 'Segoe UI', sans-serif;
+            margin: 0;
+        }
+
+        .bar {
+            position: sticky;
+            top: 0;
+            background: rgba(15, 15, 15, 0.95);
+            padding: 5px 20px;
+            display: flex;
+            justify-content: center;
+            z-index: 100;
+            border-bottom: 1px solid #333;
+            backdrop-filter: blur(10px);
+        }
+
+        .search-container {
+            display: flex;
+            width: 100%;
+            max-width: 600px;
+            gap: 10px;
+            padding: 5px 0;
+        }
+
+        input {
+            flex: 1;
+            padding: 12px 20px;
+            border-radius: 40px;
+            border: 1px solid #333;
+            background: #121212;
+            color: white;
+            outline: none;
+            font-size: 16px;
+        }
+
+        input:focus {
+            border-color: #3ea6ff;
+        }
+
+        button {
+            background: #3ea6ff;
+            border: none;
+            color: black;
+            padding: 0 24px;
+            border-radius: 40px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #65b8ff;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            padding: 20px;
+        }
+
+        .card {
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .card:hover {
+            transform: scale(1.02);
+        }
+
+        .thumb {
+            width: 100%;
+            aspect-ratio: 16/9;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #222;
+        }
+
+        .thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .info h4 {
+            font-size: 14px;
+            margin: 10px 0 5px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .info p {
+            font-size: 12px;
+            color: #aaa;
+            margin: 0;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #aaa;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        #more-btn {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            color: #3ea6ff;
+            padding: 10px 40px;
+            border-radius: 40px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            transition: all 0.2s;
+            display: {{display_more}};
+            margin-top: 20px;
+        }
+
+        #more-btn:hover {
+            background: #222;
+            border-color: #3ea6ff;
+        }
+
+        #more-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* プレイリスト用のオーバーレイ */
+        .card .thumb {
+            position: relative;
+        }
+
+        .playlist-overlay {
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 4px 8px;
+            font-size: 11px;
+            font-weight: bold;
+            border-radius: 4px 0 0 0;
+        }
+
+        .uploader-link {
+            cursor: pointer;
+            transition: color 0.1s;
+        }
+
+        .uploader-link:hover {
+            color: #3ea6ff;
+            text-decoration: underline;
+        }
+
+        .thumb.channel-circle {
+            border-radius: 50%;
+            width: 120px;
+            height: 120px;
+            margin: 10px auto;
+        }
+
+        .thumb.channel-circle img {
+            border-radius: 50%;
+        }
+
+    </style>
+</head>
+
+<body>
+
+    <div class="bar">
+        <a id="back-link" href="{{GAS_URL}}?path=/search" onclick="top.location.href=this.href; return false;" 
+           style="display: {{display_back}}; position: absolute; left: 20px; color: #3ea6ff; text-decoration: none; font-weight: bold; font-size: 14px;">☜ 戻る</a>
+        <div class="search-container">
+            <input type="text" id="q-input" value="{{q}}" placeholder="検索キーワードを入力..." autocomplete="off">
+            <button id="search-btn" onclick="doSearch()">検索</button>
+        </div>
+    </div>
+
+    <div id="loading" class="loading">検索中...</div>
+    <div class="grid">{{results}}</div>
+
+    <div style="text-align: center; padding-bottom: 50px;">
+        <button id="more-btn" onclick="loadMore()">もっと表示</button>
+    </div>
+
+
+    <script>
+        // プロキシ経由で画像を読み込む
+        function loadProxiedImages() {
+            const images = document.querySelectorAll('img[data-proxy-path]');
+            images.forEach(img => {
+                const path = img.getAttribute('data-proxy-path');
+                const url = img.getAttribute('data-proxy-url');
+                if (!path || !url) return;
+
+                // すでに読み込み中または完了ならスキップ
+                if (img.dataset.loading === 'true') return;
+                img.dataset.loading = 'true';
+
+                google.script.run
+                    .withSuccessHandler(base64 => {
+                        if (base64) {
+                            img.src = 'data:image/jpeg;base64,' + base64;
+                            img.removeAttribute('data-proxy-path');
+                            img.removeAttribute('data-proxy-url');
+                        }
+                    })
+                    .proxyBinary(path, { url: url });
+            });
+        }
+
+        // 初期読み込み
+        window.addEventListener('load', loadProxiedImages);
+
+        function doSearch() {
+            var q = document.getElementById('q-input').value.trim();
+            if (q) {
+                document.getElementById('loading').className = 'loading active';
+                document.getElementById('search-btn').disabled = true;
+                // GAS URLへ遷移
+                top.location.href = "{{GAS_URL}}?path=/search&q=" + encodeURIComponent(q);
+            }
+        }
+        document.getElementById('q-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') doSearch();
+        });
+
+        // 続きを読み込む
+        let nextStart = {{next_start}};
+        const query = "{{q}}";
+        const currentPath = "{{current_path}}";
+        const currentId = "{{current_id}}";
+        const stepSize = {{step_size}};
+
+        function loadMore() {
+            const btn = document.getElementById('more-btn');
+            const grid = document.querySelector('.grid');
+            if (!grid || btn.disabled) return;
+
+            btn.disabled = true;
+            const originalText = btn.textContent;
+            btn.textContent = "読み込み中...";
+
+            const params = { start: nextStart, ajax: "1" };
+            if (currentPath === '/search') params.q = query;
+            if (currentPath === '/channel') params.id = currentId;
+
+            google.script.run
+                .withSuccessHandler(html => {
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+
+                    if (html && html.trim()) {
+                        grid.insertAdjacentHTML('beforeend', html);
+                        nextStart += stepSize;
+                        loadProxiedImages(); // 新しく追加された画像のプロキシ読み込み
+                    } else {
+                        btn.style.display = 'none';
+                    }
+                })
+                .withFailureHandler(err => {
+                    console.error("Load more failed:", err);
+                    btn.disabled = false;
+                    btn.textContent = "エラーが発生しました";
+                })
+                .proxyFetch(currentPath, params);
+        }
+
+    </script>
+</body>
+
+</html>

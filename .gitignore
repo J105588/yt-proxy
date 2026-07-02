@@ -1,0 +1,31 @@
+# Dependency directories
+node_modules/
+
+# Credentials and sensitive data
+.env
+cookies.txt
+users.json
+sessions.json
+
+# User personal data (history & favorites)
+history/
+favorites/
+
+# Binaries
+cloudflared.exe
+
+# Logs and temporary execution artifacts
+tunnel.log
+temp_url.txt
+tmp/
+*.log
+
+# Temporary test/cache data
+search_results.json
+yt_trends.json
+test_video.json
+
+# Scratchpad / Test scripts
+scratch/
+test*.js
+test*.txt

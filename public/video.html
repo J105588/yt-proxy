@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>{{title}} - YT</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0f0f0f;
+            color: white;
+            font-family: 'Segoe UI', sans-serif;
+            margin: 0;
+        }
+
+        .top-bar {
+            padding: 5px 20px;
+            border-bottom: 1px solid #222;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            background: rgba(15, 15, 15, 0.95);
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+        }
+
+        .top-bar a {
+            color: #3ea6ff;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+
+        .search-container {
+            display: flex;
+            flex: 1;
+            max-width: 500px;
+            gap: 10px;
+            margin: 0 20px;
+        }
+
+        .search-container input {
+            flex: 1;
+            padding: 8px 16px;
+            border-radius: 40px;
+            border: 1px solid #333;
+            background: #121212;
+            color: white;
+            outline: none;
+            font-size: 14px;
+        }
+
+        .search-container button {
+            background: #3ea6ff;
+            border: none;
+            padding: 0 16px;
+            border-radius: 40px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 13px;
+        }
+
+        .top-bar a:hover {
+            text-decoration: underline;
+        }
+
+        .container {
+            display: flex;
+            padding: 20px;
+            gap: 24px;
+            justify-content: center;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .video-area {
+            flex: 1;
+            max-width: 1280px;
+            min-width: 0;
+        }
+
+        video {
+            width: 100%;
+            aspect-ratio: 16/9;
+            background: #000;
+            border-radius: 12px;
+            display: block;
+        }
+
+        h2 {
+            font-size: 18px;
+            margin: 16px 0 8px;
+            line-height: 1.4;
+        }
+
+        .meta {
+            color: #aaa;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        .desc-box {
+            background: #272727;
+            padding: 15px;
+            border-radius: 12px;
+            margin: 16px 0;
+            font-size: 14px;
+            line-height: 1.6;
+            color: #efefef;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .comments-section h3 {
+            font-size: 16px;
+            margin: 20px 0 12px;
+        }
+
+        .comment {
+            margin-bottom: 12px;
+            border-bottom: 1px solid #222;
+            padding-bottom: 10px;
+        }
+
+        .c-author {
+            font-weight: bold;
+            color: #aaa;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        .c-text {
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .sidebar {
+            width: 380px;
+            flex-shrink: 0;
+        }
+
+        .side-card {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            padding: 4px;
+            border-radius: 8px;
+        }
+
+        .side-card:hover {
+            background: #1a1a1a;
+        }
+
+        .side-card img {
+            width: 160px;
+            height: 90px;
+            border-radius: 8px;
+            object-fit: cover;
+            flex-shrink: 0;
+            display: block;
+        }
+
+        .side-info h5 {
+            font-size: 13px;
+            margin: 0 0 4px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .side-info p {
+            font-size: 11px;
+            color: #aaa;
+            margin: 0;
+        }
+
+        .uploader-link {
+            cursor: pointer;
+            transition: color 0.1s;
+        }
+
+        .uploader-link:hover {
+            color: #3ea6ff;
+            text-decoration: underline;
+        }
+
+        .uploader-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            object-fit: cover;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .uploader-avatar:hover {
+            opacity: 0.8;
+        }
+
+        .music-box {
+            background: rgba(106, 13, 173, 0.1);
+            border: 1px solid rgba(106, 13, 173, 0.2);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .music-box span {
+            font-size: 12px;
+            color: #aaa;
+        }
+
+        .music-box b {
+            color: #d8b4fe;
+            margin-right: 8px;
+        }
+
+        .live-badge {
+            background: #cc0000;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+
+        @media (max-width: 1000px) {
+            .container {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="top-bar">
+        <a href="{{GAS_URL}}?path=/search" onclick="top.location.href=this.href; return false;">☜ 検索に戻る</a>
+        <div class="search-container">
+            <input type="text" id="q-input" placeholder="新しく検索..." autocomplete="off">
+            <button onclick="doSearch()">検索</button>
+        </div>
+        <div style="width: 80px;"></div>
+    </div>
+    <div id="loading"
+        style="display:none; text-align:center; padding:10px; background:#3ea6ff; color:black; font-weight:bold;">検索中...
+    </div>
+
+    <div class="container">
+        <div class="video-area">
+            <video id="player" controls></video>
+            <h2 id="video-title">
+                <span class="live-badge" style="display: {{is_live_display}};">{{is_live_status}}</span>
+                {{title}}
+            </h2>
+            <div class="meta">
+                <img id="u-avatar" class="uploader-avatar" data-proxy-path="/proxy-img"
+                    data-proxy-url="{{uploader_icon}}"
+                    src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+                    onclick="top.location.href='{{GAS_URL}}?path=/search&q={{uploader_raw}}'"
+                    style="display: {{uploader_icon_display}};">
+                <div>
+                    <span class="uploader-link"
+                        onclick="top.location.href='{{GAS_URL}}?path=/search&q={{uploader_raw}}'">{{uploader}}</span>
+                    <div style="font-size: 12px; color: #aaa; margin-top: 2px;">{{view_count}}</div>
+                </div>
+            </div>
+
+            <div class="music-box" style="display: {{m_display}};">
+                <div style="font-size: 14px; margin-bottom: 4px; color: #fff;">楽曲情報</div>
+                <div><b>曲名</b> {{m_track}}</div>
+                <div><b>アーティスト</b> {{m_artist}}</div>
+                <div><b>アルバム</b> {{m_album}} ({{m_year}})</div>
+            </div>
+            <div class="desc-box">{{description}}</div>
+            <div class="comments-section">
+                <h3>コメント</h3>
+                {{comments}}
+            </div>
+        </div>
+        <div class="sidebar">{{related}}</div>
+    </div>
+
+    <script>
+        const VIDEO_ID = "{{id}}";
+        const IS_LIVE = "{{is_live_status}}" === "LIVE";
+        const player = document.getElementById('player');
+        let mediaSource = new MediaSource();
+        let sourceBuffer = null;
+        let currentByte = 0;
+        const CHUNK_SIZE = 1 * 1024 * 1024; // 1MB
+        let isLoading = false;
+        let isStopped = false;
+
+        function log(msg, error = false) {
+            const text = `[OptimizedPlayer] ${msg}`;
+            if (error) console.error(text);
+            else console.log(text);
+        }
+
+        // プロキシ経由で画像を読み込む (共通)
+        function loadProxiedImages() {
+            log("Loading thumbnails...");
+            document.querySelectorAll('img[data-proxy-path]').forEach(img => {
+                const path = img.getAttribute('data-proxy-path');
+                const url = img.getAttribute('data-proxy-url');
+                if (!path || !url || img.dataset.loading) return;
+                img.dataset.loading = 'true';
+                google.script.run.withSuccessHandler(base64 => {
+                    if (base64) img.src = 'data:image/jpeg;base64,' + base64;
+                }).proxyBinary(path, { url: url });
+            });
+        }
+
+        function initPlayer() {
+            log("Starting Optimized Byte-Range Player...");
+            player.src = URL.createObjectURL(mediaSource);
+
+            mediaSource.addEventListener('sourceopen', () => {
+                log("MediaSource open.");
+                try {
+                    // libx264 Baseline, AAC
+                    const codec = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+                    sourceBuffer = mediaSource.addSourceBuffer(codec);
+                    sourceBuffer.addEventListener('updateend', () => {
+                        isLoading = false;
+                        checkBuffer();
+                    });
+
+                    // 最初のチャンクをフェッチ
+                    fetchNextBytes();
+                } catch (e) {
+                    log("Codec error: " + e.message, true);
+                }
+            });
+        }
+
+        function fetchNextBytes() {
+            if (isStopped || isLoading || mediaSource.readyState !== 'open') return;
+            isLoading = true;
+
+            const start = currentByte;
+            const end = start + CHUNK_SIZE;
+            log(`Fetching bytes: ${start} - ${end}`);
+
+            google.script.run
+                .withSuccessHandler(base64 => {
+                    if (base64 === "RETRY") {
+                        log("Backend still converting... retrying in 2s");
+                        setTimeout(() => { isLoading = false; fetchNextBytes(); }, 2000);
+                        return;
+                    }
+                    if (!base64 || base64.length < 100) {
+                        if (IS_LIVE) {
+                            log("Live: No new data yet, retrying in 3s...");
+                            setTimeout(() => { isLoading = false; fetchNextBytes(); }, 3000);
+                        } else {
+                            log("Reached End of Stream or empty data.");
+                            isLoading = false;
+                        }
+                        return;
+                    }
+
+                    const binary = atob(base64);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+                    sourceBuffer.appendBuffer(bytes.buffer);
+                    currentByte += binary.length;
+                    log(`Appended ${binary.length} bytes (Total: ${currentByte})`);
+                })
+                .withFailureHandler(err => {
+                    log("Fetch failure: " + err, true);
+                    isLoading = false;
+                })
+                .proxyVideoBytes(VIDEO_ID, start, end);
+        }
+
+        function checkBuffer() {
+            if (isLoading || !sourceBuffer || sourceBuffer.updating || mediaSource.readyState !== 'open') return;
+
+            // バッファが60秒分以下なら次を読み込む（停止中も継続）
+            const buffered = player.buffered;
+            let endInSec = 0;
+            if (buffered.length > 0) {
+                endInSec = buffered.end(buffered.length - 1);
+            }
+
+            if (endInSec - player.currentTime < 60) {
+                fetchNextBytes();
+            }
+        }
+
+        // 定期的にバッファをチェックし、停止中もデータを「流し込む」
+        setInterval(checkBuffer, 3000);
+
+
+
+        function doSearch() {
+            var q = document.getElementById('q-input').value.trim();
+            if (q) {
+                document.getElementById('loading').style.display = 'block';
+                top.location.href = "{{GAS_URL}}?path=/search&q=" + encodeURIComponent(q);
+            }
+        }
+        document.getElementById('q-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') doSearch();
+        });
+
+        window.addEventListener('load', () => {
+            loadProxiedImages();
+            initPlayer();
+        });
+
+        // ページを離れる時にストリーム停止を通知
+        window.addEventListener('beforeunload', () => {
+            isStopped = true;
+            if (google && google.script && google.script.run) {
+                google.script.run.proxyStop(VIDEO_ID);
+            }
+        });
+
+        player.addEventListener('error', (e) => {
+            log(`Player Error: ${player.error.message}`, true);
+        });
+    </script>
+</body>
+
+</html>
