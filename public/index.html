@@ -1201,44 +1201,7 @@
         var currentUser = null;
         var token = localStorage.getItem('token');
         var adminSavedToken = null; // 管理者のセッション退避用
-        var isImpersonated = false;
-        var urlParams = new URLSearchParams(window.location.search);
-        var impToken = urlParams.get('impersonate_token');
-        if (impToken) {
-            isImpersonated = true;
-            token = impToken;
-            console.log("[Impersonate] Running in preview mode with temporary token.");
-            
-            // プレビュー表示用のスタイル調整 (ヘッダーとサイドバーを隠してすっきりさせる)
-            var style = document.createElement('style');
-            style.innerHTML = 'header, #sidebar { display: none !important; } .main-container { height: 100vh !important; } .content { padding: 12px 12px 60px 12px !important; margin-left: 0 !important; }';
-            document.head.appendChild(style);
-        }
 
-        // 親（管理者メイン画面）が子（iframe）からのAPIリクエストを受け取り、代わりに実行して結果を返す postMessage ブリッジ
-        window.addEventListener('message', function (event) {
-            if (event.data && event.data.type === 'API_REQUEST') {
-                var req = event.data;
-                // 親のapi()関数を使ってリクエストを実行 (ただし、トークンはプレビュー側のものを引き継ぐためreq.params.tokenを使用)
-                api(req.path, req.params).then(function (res) {
-                    if (event.source) {
-                        event.source.postMessage({
-                            type: 'API_RESPONSE',
-                            requestId: req.requestId,
-                            result: res
-                        }, '*');
-                    }
-                }).catch(function (err) {
-                    if (event.source) {
-                        event.source.postMessage({
-                            type: 'API_RESPONSE',
-                            requestId: req.requestId,
-                            error: err.message || 'API Error'
-                        }, '*');
-                    }
-                });
-            }
-        });
         var currentView = 'home';
         var scrollPositions = {};
         var lastParams = {};
@@ -1326,30 +1289,7 @@
         function api(path, params) {
             if (!params) params = {};
 
-            // プレビューモード（子 iframe 内）の場合は、GASのサンドボックス制限を回避するため親にリクエストを転送する
-            if (isImpersonated && window.self !== window.top) {
-                if (token) params.token = token;
-                return new Promise(function (resolve, reject) {
-                    var requestId = Math.random().toString(36).substring(2);
-                    var listener = function (event) {
-                        if (event.data && event.data.type === 'API_RESPONSE' && event.data.requestId === requestId) {
-                            window.removeEventListener('message', listener);
-                            if (event.data.error) {
-                                reject(new Error(event.data.error));
-                            } else {
-                                resolve(event.data.result);
-                            }
-                        }
-                    };
-                    window.addEventListener('message', listener);
-                    window.parent.postMessage({
-                        type: 'API_REQUEST',
-                        requestId: requestId,
-                        path: path,
-                        params: params
-                    }, '*');
-                });
-            }
+
 
             if (typeof google !== 'undefined' && google.script && google.script.run) {
                 if (token) params.token = token;
@@ -2243,17 +2183,7 @@
                     '<pre id="user-history-preview" style="background:#000; color:#0f0; padding:16px; border-radius:12px; max-height:300px; overflow:auto; font-family:monospace; line-height:1.4; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>' +
                     '</div>' +
 
-                    '<div id="admin-preview-container" style="display:none; background:#1e1e1e; padding:24px 16px; border-radius:16px; margin-bottom:32px; border:1px solid #333; text-align:center;">' +
-                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px;">' +
-                    '<h3 id="admin-preview-title" style="margin:0; color:#fff; text-align:left;"></h3>' +
-                    '<button class="btn" onclick="closeAdminPreview()" style="width:auto; padding:0 16px; height:32px; background:var(--yt-red); color:#fff; font-size:12px; margin-top:0;">プレビューを閉じる</button>' +
-                    '</div>' +
-                    '<div style="display:flex; justify-content:center; align-items:center;">' +
-                    '<div class="admin-preview-box" style="width:100%; max-width:360px; height:640px; border:12px solid #282828; border-radius:32px; box-shadow:0 20px 40px rgba(0,0,0,0.6); background:#000; position:relative; overflow:hidden;">' +
-                    '<iframe id="admin-preview-iframe" src="about:blank" style="width:100%; height:100%; border:none;"></iframe>' +
-                    '</div>' +
-                    '</div>' +
-                    '</div>' +
+
                     
                     '<h3>\u30b5\u30fc\u30d0\u30fc\u5236\u5fa1</h3>' +
                     '<div class="admin-card" style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">' +
@@ -2323,32 +2253,72 @@
         }
 
         function previewUser(username) {
+            if (!confirm(username + ' としてプレビューを開始しますか？\n（管理者のセッションは維持され、いつでも最上部のバーからプレビューを終了して管理画面に戻れます）')) return;
+
             api('/api/admin/impersonate', { username: username }).then(function (res) {
                 if (res.token) {
-                    var container = document.getElementById('admin-preview-container');
-                    var iframe = document.getElementById('admin-preview-iframe');
-                    var title = document.getElementById('admin-preview-title');
-                    
-                    if (container && iframe && title) {
-                        title.textContent = username + ' のプレビュー画面 (管理者のセッションは維持されています)';
-                        var baseUrl = window.location.href.split('?')[0];
-                        iframe.src = baseUrl + '?impersonate_token=' + encodeURIComponent(res.token);
-                        container.style.display = 'block';
-                        container.scrollIntoView({ behavior: 'smooth' });
-                    }
+                    // 現在の管理者のトークンを退避
+                    adminSavedToken = localStorage.getItem('token');
+
+                    // 一時的になりすましトークンを適用
+                    localStorage.setItem('token', res.token);
+                    token = res.token;
+
+                    // キャッシュのクリア
+                    apiCache.clear();
+
+                    // プレビュー表示バーを表示
+                    showPreviewBar(username);
+
+                    // 新しいセッションで認証をチェックしてホームへ遷移
+                    checkAuth();
+                    nav('home');
                 } else {
-                    alert('プレビューセッションの作成に失敗しました');
+                    alert('プレビューの開始に失敗しました');
                 }
             }).catch(function (err) {
                 alert('エラーが発生しました: ' + (err.message || err));
             });
         }
 
-        function closeAdminPreview() {
-            var container = document.getElementById('admin-preview-container');
-            var iframe = document.getElementById('admin-preview-iframe');
-            if (container) container.style.display = 'none';
-            if (iframe) iframe.src = 'about:blank';
+        function showPreviewBar(username) {
+            var bar = document.getElementById('preview-mode-bar');
+            if (!bar) {
+                bar = document.createElement('div');
+                bar.id = 'preview-mode-bar';
+                bar.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:40px; background:#1a73e8; color:#fff; display:flex; align-items:center; justify-content:space-between; padding:0 16px; z-index:9999; font-weight:bold; font-size:14px; box-shadow:0 2px 10px rgba(0,0,0,0.5);';
+                document.body.appendChild(bar);
+            }
+            bar.innerHTML = '<span>' + h(username) + ' の画面をプレビュー中 (管理者セッション維持)</span>' +
+                '<div>' +
+                '<button onclick="exitPreviewAndGoBack()" style="background:#fff; color:#1a73e8; border:none; padding:4px 12px; border-radius:4px; font-weight:bold; cursor:pointer;">プレビューを終了</button>' +
+                '</div>';
+
+            document.body.style.paddingTop = '40px';
+        }
+
+        function exitPreviewAndGoBack() {
+            if (!adminSavedToken) {
+                logout();
+                return;
+            }
+
+            // トークンを管理者のものに復元
+            localStorage.setItem('token', adminSavedToken);
+            token = adminSavedToken;
+            adminSavedToken = null;
+
+            // バーの撤去
+            var bar = document.getElementById('preview-mode-bar');
+            if (bar) bar.parentNode.removeChild(bar);
+            document.body.style.paddingTop = '0px';
+
+            // キャッシュクリア
+            apiCache.clear();
+
+            // 管理者の認証を復元して管理画面に戻る
+            checkAuth();
+            nav('admin');
         }
 
 

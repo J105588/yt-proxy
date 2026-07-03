@@ -28,6 +28,7 @@ if !WAIT_COUNT! gtr 10 (
     taskkill /f /fi "windowtitle eq YT-Proxy-Maintenance-Loop*" >nul 2>&1
     taskkill /f /fi "windowtitle eq YT-Proxy-Server*" >nul 2>&1
     taskkill /f /im cloudflared.exe >nul 2>&1
+    taskkill /f /im ffmpeg.exe >nul 2>&1
     for /f "tokens=5" %%a in ('netstat -aon ^| findstr LISTENING ^| findstr :3000') do taskkill /f /pid %%a >nul 2>&1
     if exist stop.trigger del /f /q stop.trigger >nul 2>&1
     goto stop_done

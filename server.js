@@ -6,6 +6,7 @@ const path = require('path');
 const axios = require('axios');
 const crypto = require('crypto');
 const app = express();
+app.set('trust proxy', true);
 const PORT = process.env.PORT || 3000;
 
 // GAS 連携設定 (start.bat と合わせる)
@@ -38,8 +39,16 @@ if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR);
 const FAVORITES_DIR = path.join(__dirname, 'favorites');
 if (!fs.existsSync(FAVORITES_DIR)) fs.mkdirSync(FAVORITES_DIR);
 
-function hashPassword(password, salt) {
+const { promisify } = require('util');
+const scryptAsync = promisify(crypto.scrypt);
+
+function hashPasswordSync(password, salt) {
     return crypto.scryptSync(password, salt, 64).toString('hex');
+}
+
+async function hashPassword(password, salt) {
+    const derivedKey = await scryptAsync(password, salt, 64);
+    return derivedKey.toString('hex');
 }
 
 function generateSalt() {
@@ -104,7 +113,7 @@ function saveUsers(users) {
         const adminUser = {
             username: 'admin',
             salt: salt,
-            password: hashPassword(randomPassword, salt),
+            password: hashPasswordSync(randomPassword, salt),
             role: 'admin',
             created: Date.now()
         };
@@ -275,7 +284,7 @@ function getNicoStreamInfo(id) {
 
 // --- 認証API ---
 
-app.get('/api/signup', auth, (req, res) => {
+app.get('/api/signup', auth, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
     const { user, pass } = req.query;
     if (!user || !pass) return res.status(400).json({ error: 'IDとパスワードが必要です' });
@@ -292,7 +301,7 @@ app.get('/api/signup', auth, (req, res) => {
     const newUser = {
         username: user,
         salt: salt,
-        password: hashPassword(pass, salt),
+        password: await hashPassword(pass, salt),
         role: 'user', // 管理者が作成するのは一般ユーザー
         created: Date.now()
     };
@@ -303,7 +312,7 @@ app.get('/api/signup', auth, (req, res) => {
     res.json({ token, username: newUser.username, role: newUser.role });
 });
 
-app.get('/api/login', (req, res) => {
+app.get('/api/login', async (req, res) => {
     const { user, pass } = req.query;
     if (!user || !pass) return res.status(400).json({ error: 'ユーザー名とパスワードが必要です' });
 
@@ -312,7 +321,7 @@ app.get('/api/login', (req, res) => {
     if (!target) return res.status(401).json({ error: 'ユーザー名またはパスワードが違います' });
 
     // 個別ソルトを用いてパスワードハッシュを計算して比較
-    const calculatedHash = hashPassword(pass, target.salt || 'yt-proxy-salt');
+    const calculatedHash = await hashPassword(pass, target.salt || 'yt-proxy-salt');
     if (target.password !== calculatedHash) {
         return res.status(401).json({ error: 'ユーザー名またはパスワードが違います' });
     }
@@ -494,7 +503,7 @@ app.get('/api/admin/delete-user', auth, (req, res) => {
     res.json({ success: true });
 });
 
-app.get('/api/admin/change-password', auth, (req, res) => {
+app.get('/api/admin/change-password', auth, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
     const { user, newPass } = req.query;
     if (!user || !newPass) return res.status(400).json({ error: 'ユーザー名と新しいパスワードが必要です' });
@@ -506,7 +515,7 @@ app.get('/api/admin/change-password', auth, (req, res) => {
     // パスワード変更時に新しいランダムソルトを生成して適用
     const salt = generateSalt();
     users[targetIdx].salt = salt;
-    users[targetIdx].password = hashPassword(newPass, salt);
+    users[targetIdx].password = await hashPassword(newPass, salt);
     saveUsers(users);
     res.json({ success: true });
 });
@@ -594,7 +603,19 @@ function runYtDlpAsync(args, timeout = 30000) {
 
 // SPA メイン
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    try {
+        const filePath = path.join(__dirname, 'public', 'index.html');
+        let html = fs.readFileSync(filePath, 'utf8');
+        const proto = req.headers['x-forwarded-proto'] || req.protocol;
+        const tunnelUrl = `${proto}://${req.get('host')}`;
+        html = html.replace(/\{\{TUNNEL_URL\}\}/g, tunnelUrl);
+        const gasUrl = process.env.GAS_URL || '';
+        html = html.replace(/\{\{GAS_URL\}\}/g, gasUrl);
+        res.send(html);
+    } catch (e) {
+        console.error("Failed to load index.html:", e.message);
+        res.status(500).send("Error loading page");
+    }
 });
 
 // yt-dlp結果を分類するヘルパー
@@ -849,19 +870,19 @@ app.get('/api/search', auth, async (req, res) => {
                     ];
                 }
 
-                // トレンドワードで並列検索を実行
+                // トレンドワードで順次検索を実行
                 // 枠の不足分を満たすため、各キーワードから2〜3件ずつ検索結果をマージする
-                const trendTasks = trendKeywords.map(kw =>
-                    runYtDlpAsync([
+                const trendRaw = [];
+                for (const kw of trendKeywords) {
+                    const out = await runYtDlpAsync([
                         `ytsearch3:${kw}`,
                         '--dump-json',
                         '--flat-playlist',
                         '--no-warnings',
                         ...langArgs
-                    ], 15000).catch(() => "")
-                );
-
-                const trendRaw = await Promise.all(trendTasks);
+                    ], 25000).catch(() => "");
+                    trendRaw.push(out);
+                }
 
                 trendRaw.forEach(out => {
                     if (!out) return;
@@ -1308,7 +1329,7 @@ app.get('/api/video', auth, async (req, res) => {
                         '--playlist-end', '1',
                         '--dump-json',
                         '--no-warnings'
-                    ], 10000);
+                    ], 25000);
 
                     if (resolveOut) {
                         const lines = resolveOut.split('\n').filter(l => l.trim());
@@ -1350,14 +1371,14 @@ app.get('/api/video', auth, async (req, res) => {
                 '--no-warnings',
                 '--no-playlist',
                 '--extractor-args', 'youtube:player_client=android,mweb'
-            ], 15000),
+            ], 35000),
             runYtDlpAsync([
                 `https://www.youtube.com/watch?v=${id}&list=RD${id}`,
                 '--flat-playlist',
                 '--dump-json',
                 '--playlist-end', '15',
                 '--no-warnings'
-            ], 15000).catch(() => ""),
+            ], 35000).catch(() => ""),
             runYtDlpAsync([
                 `https://www.youtube.com/watch?v=${id}`,
                 '--get-comments',
@@ -1365,7 +1386,7 @@ app.get('/api/video', auth, async (req, res) => {
                 '--dump-json',
                 '--no-warnings',
                 '--extractor-args', 'youtube:max_comments=20'
-            ], 15000).catch(() => "")
+            ], 35000).catch(() => "")
         ]);
 
         const info = JSON.parse(mainOut);
@@ -1415,6 +1436,33 @@ app.get('/api/video', auth, async (req, res) => {
 // 変換管理 (プロセス、最終アクセス時刻、ライブ配信かどうかのフラグ)
 const conversions = new Map();
 const TMP_DIR = path.join(__dirname, 'tmp');
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
+
+function killAllConversions() {
+    console.log('[Shutdown] Cleaning up active conversion processes...');
+    for (const [id, data] of conversions.entries()) {
+        if (data.proc) {
+            try {
+                console.log(`[Shutdown] Killing ffmpeg process for: ${id}`);
+                data.proc.kill('SIGKILL');
+            } catch (e) {
+                console.error(`[Shutdown] Failed to kill ffmpeg for ${id}:`, e.message);
+            }
+        }
+    }
+}
+
+process.on('exit', () => {
+    killAllConversions();
+});
+
+process.on('SIGINT', () => {
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    process.exit(0);
+});
 
 // 古いプロセスのクリーンアップ (5分間アクセスがないプロセスを終了)
 setInterval(() => {
@@ -1486,7 +1534,7 @@ app.get('/stream-bytes', async (req, res) => {
                     '-f', formats,
                     '--no-warnings',
                     '--no-playlist'
-                ], 10000).trim();
+                ], 25000).trim();
 
                 if (!directUrl) throw new Error("directUrl is empty");
 
@@ -1504,7 +1552,18 @@ app.get('/stream-bytes', async (req, res) => {
 
             ffmpeg.on('close', (code) => {
                 console.log(`Conversion process closed for ${id} with code ${code}`);
-                // プロセス終了は記録するが、Mapからの削除はクリーンアップ処理または明示的停止に任せる
+                const data = conversions.get(id);
+                if (data) {
+                    data.proc = null;
+                }
+                if (code !== 0) {
+                    console.log(`Conversion failed. Removing conversion record and temp file for ${id}.`);
+                    conversions.delete(id);
+                    const tmpPath = path.join(TMP_DIR, `${id}.mp4`);
+                    if (fs.existsSync(tmpPath)) {
+                        fs.unlink(tmpPath, () => { });
+                    }
+                }
             });
 
             // 最初の書き込みを待つ
@@ -1530,6 +1589,14 @@ app.get('/stream-bytes', async (req, res) => {
 
         const stats = fs.statSync(tmpPath);
         const actualEnd = Math.min(end, stats.size - 1);
+
+        res.status(206);
+        res.set({
+            'Content-Type': 'video/mp4',
+            'Accept-Ranges': 'bytes',
+            'Content-Range': `bytes ${start}-${actualEnd}/${stats.size}`,
+            'Content-Length': (actualEnd - start + 1)
+        });
 
         const readStream = fs.createReadStream(tmpPath, { start, end: actualEnd });
         readStream.pipe(res);
@@ -1568,7 +1635,7 @@ app.get('/stream-part', async (req, res) => {
             '-f', 'best[height<=720][ext=mp4]/best[height<=720]/best',
             '--no-warnings',
             '--no-playlist'
-        ], 10000).trim();
+        ], 25000).trim();
 
         if (!directUrl) throw new Error("Could not get direct URL");
 
@@ -1636,7 +1703,7 @@ app.get('/stream', async (req, res) => {
                 '-f', formatStr,
                 '--no-warnings',
                 '--no-playlist'
-            ], 10000).trim();
+            ], 25000).trim();
 
             if (directUrl.includes('.m3u8') || directUrl.includes('manifest/hls_live_itags') || directUrl.includes('live=1')) {
                 isLive = true;
@@ -1712,6 +1779,21 @@ app.get('/stream', async (req, res) => {
 
                     conversions.set(id, { proc: ffmpeg, lastSeen: Date.now() });
 
+                    ffmpeg.on('close', (code) => {
+                        console.log(`Conversion process closed for ${id} with code ${code} (via /stream)`);
+                        const data = conversions.get(id);
+                        if (data) {
+                            data.proc = null;
+                        }
+                        if (code !== 0) {
+                            console.log(`Conversion failed (via /stream). Removing conversion record and temp file for ${id}.`);
+                            conversions.delete(id);
+                            if (fs.existsSync(tmpPath)) {
+                                fs.unlink(tmpPath, () => { });
+                            }
+                        }
+                    });
+
                     // 最初の書き込みを待つ
                     await new Promise(r => setTimeout(r, 2000));
                 } catch (e) {
@@ -1785,9 +1867,31 @@ app.get('/stream', async (req, res) => {
 });
 
 // 画像プロキシ
+function isValidProxyUrl(urlStr) {
+    try {
+        const parsed = new URL(urlStr);
+        const host = parsed.hostname.toLowerCase();
+        const allowedDomains = [
+            'ytimg.com',
+            'ggpht.com',
+            'gstatic.com',
+            'googleusercontent.com',
+            'nicovideo.jp',
+            'nimg.jp'
+        ];
+        return allowedDomains.some(domain => host === domain || host.endsWith('.' + domain));
+    } catch (e) {
+        return false;
+    }
+}
+
 app.get('/proxy-img', async (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).end();
+
+    if (!isValidProxyUrl(targetUrl)) {
+        return res.status(400).send("Forbidden target URL");
+    }
 
     try {
         const isNico = targetUrl.includes('nicovideo.jp') || targetUrl.includes('nimg.jp');
