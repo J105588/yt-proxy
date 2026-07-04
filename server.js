@@ -38,6 +38,9 @@ const HISTORY_DIR = path.join(__dirname, 'history');
 if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR);
 const FAVORITES_DIR = path.join(__dirname, 'favorites');
 if (!fs.existsSync(FAVORITES_DIR)) fs.mkdirSync(FAVORITES_DIR);
+const LOGS_DIR = path.join(__dirname, 'logs');
+if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR);
+const OP_LOG_FILE = path.join(LOGS_DIR, 'operations.jsonl');
 
 const { promisify } = require('util');
 const scryptAsync = promisify(crypto.scrypt);
@@ -182,6 +185,135 @@ function auth(req, res, next) {
     next();
 }
 
+// 操作ログの記録用ミドルウェア
+function logOperation(req, res, next) {
+    const pathName = req.path;
+    // 静的ファイルや無関係なルートを除外して、APIとストリーム再生ルートのみ記録
+    if (!pathName.startsWith('/api') && !pathName.startsWith('/stream')) {
+        return next();
+    }
+
+    const start = Date.now();
+
+    res.on('finish', () => {
+        // 頻繁に呼び出されるノイズ系ルートは除外
+        if (pathName === '/api/me' || pathName === '/api/favorites/check' ||
+            pathName === '/stop-stream' || pathName === '/proxy-img') {
+            return;
+        }
+
+        const duration = Date.now() - start;
+        const status = res.statusCode;
+
+        // ユーザー情報の特定
+        // authミドルウェアを通らないルート（/stream-bytes 等）では req.user が未設定のため、
+        // クエリパラメータまたはAuthorizationヘッダーのトークンからSESSIONSを直接ルックアップして補完する
+        let username = 'guest';
+        let role = '-';
+        if (req.user) {
+            username = req.user.username;
+            role = req.user.role;
+        } else {
+            // トークンをクエリパラメータまたはAuthorizationヘッダーから取得
+            let rawToken = req.query.token;
+            if (!rawToken) {
+                const authHeader = req.headers['authorization'];
+                if (authHeader && authHeader.startsWith('Bearer ')) {
+                    rawToken = authHeader.substring(7);
+                } else if (authHeader) {
+                    rawToken = authHeader;
+                }
+            }
+            if (rawToken) {
+                const sess = SESSIONS.get(rawToken);
+                if (sess) {
+                    username = sess.username;
+                    role = sess.role;
+                }
+            } else if (req.query.user || req.query.username) {
+                // ログインAPIなど認証前リクエストの場合はユーザー名パラメータを使用
+                username = req.query.user || req.query.username;
+            }
+        }
+
+        // アクション名と詳細情報の整理（クエリ等から機密情報を削除）
+        let action = 'APIリクエスト';
+        let details = {};
+
+        const queryParams = { ...req.query };
+        delete queryParams.pass;
+        delete queryParams.newPass;
+        delete queryParams.token;
+
+        if (pathName === '/api/login') {
+            action = 'ログイン';
+            details = { user: queryParams.user };
+        } else if (pathName === '/api/signup') {
+            action = 'ユーザー作成';
+            details = { user: queryParams.user };
+        } else if (pathName === '/api/admin/delete-user') {
+            action = 'ユーザー削除';
+            details = { user: queryParams.user };
+        } else if (pathName === '/api/admin/change-password') {
+            action = 'パスワード変更';
+            details = { user: queryParams.user };
+        } else if (pathName === '/api/admin/impersonate') {
+            action = 'なりすましログイン';
+            details = { impersonatedUser: queryParams.username };
+        } else if (pathName === '/api/admin/logs') {
+            action = 'システムログ閲覧';
+        } else if (pathName === '/api/admin/command') {
+            action = 'サーバー再起動';
+        } else if (pathName === '/api/favorites/add') {
+            action = 'お気に入り追加';
+            details = { id: queryParams.id, title: queryParams.title };
+        } else if (pathName === '/api/favorites/remove') {
+            action = 'お気に入り削除';
+            details = { id: queryParams.id };
+        } else if (pathName === '/api/search') {
+            action = '動画検索';
+            details = { q: queryParams.q };
+        } else if (pathName === '/api/video') {
+            action = '動画情報取得';
+            details = { id: queryParams.id };
+        } else if (pathName.startsWith('/stream')) {
+            action = '動画ストリーミング';
+            details = { id: queryParams.id || queryParams.v };
+        } else if (pathName === '/api/channel') {
+            action = 'チャンネル情報取得';
+            details = { id: queryParams.id };
+        } else {
+            action = `API: ${pathName}`;
+            details = queryParams;
+        }
+
+        const ip = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+
+        const logEntry = {
+            time: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }),
+            timestamp: Date.now(),
+            username,
+            role,
+            action,
+            path: pathName,
+            ip,
+            status,
+            duration,
+            details: Object.keys(details).length > 0 ? JSON.stringify(details) : '-'
+        };
+
+        try {
+            fs.appendFileSync(OP_LOG_FILE, JSON.stringify(logEntry) + '\n', 'utf8');
+        } catch (e) {
+            console.error('Failed to write operation log:', e);
+        }
+    });
+
+    next();
+}
+
+app.use(logOperation);
+
 // 閲覧履歴の記録
 function recordHistory(user, video) {
     const username = path.basename(user.username);
@@ -220,6 +352,9 @@ function runYtDlp(args, timeout = 30000) {
     const finalArgs = [
         '--no-check-certificate',
         '--no-call-home',
+        '--retries', '10',
+        '--fragment-retries', '10',
+        '--socket-timeout', '20',
         ...args
     ];
 
@@ -539,6 +674,21 @@ app.get('/api/admin/logs', auth, (req, res) => {
     }
 });
 
+app.get('/api/admin/operation-logs', auth, (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    if (!fs.existsSync(OP_LOG_FILE)) return res.json([]);
+
+    try {
+        const content = fs.readFileSync(OP_LOG_FILE, 'utf8');
+        const lines = content.trim().split('\n').filter(Boolean);
+        const targetLines = lines.slice(-2000).reverse();
+        const logs = targetLines.map(line => JSON.parse(line));
+        res.json(logs);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/admin/command', auth, (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
 
@@ -570,6 +720,9 @@ function runYtDlpAsync(args, timeout = 30000) {
         const finalArgs = [
             '--no-check-certificate',
             '--no-call-home',
+            '--retries', '10',
+            '--fragment-retries', '10',
+            '--socket-timeout', '20',
             '--extractor-args', 'youtube:player_client=android,mweb;lang=ja;region=jp',
             ...args
         ];
@@ -1435,6 +1588,183 @@ app.get('/api/video', auth, async (req, res) => {
 
 // 変換管理 (プロセス、最終アクセス時刻、ライブ配信かどうかのフラグ)
 const conversions = new Map();
+const startingConversions = new Map();
+
+function getFileSize(filePath) {
+    try {
+        if (fs.existsSync(filePath)) {
+            return fs.statSync(filePath).size;
+        }
+    } catch (e) {}
+    return 0;
+}
+
+async function ensureConversion(id, quality) {
+    const isNico = isNicoId(id);
+    const convKey = isNico ? id : `${id}_${quality}`;
+    const tmpPath = path.join(TMP_DIR, `${convKey}.mp4`);
+
+    if (conversions.has(convKey)) {
+        const data = conversions.get(convKey);
+        data.lastSeen = Date.now();
+        return;
+    }
+
+    if (startingConversions.has(convKey)) {
+        await startingConversions.get(convKey);
+        return;
+    }
+
+    const promise = (async () => {
+        // 同じ動画IDの他の画質の変換プロセスがあればクリーンアップ (再生中画質切り替え対策)
+        for (const [key, data] of conversions.entries()) {
+            if (key !== convKey && key.startsWith(id + '_')) {
+                console.log(`Killing older quality conversion process for: ${key} (via ensureConversion)`);
+                if (data.proc) {
+                    try { data.proc.kill('SIGKILL'); } catch (e) {}
+                }
+                conversions.delete(key);
+                const tmpPathOld = path.join(TMP_DIR, `${key}.mp4`);
+                if (fs.existsSync(tmpPathOld)) {
+                    fs.unlink(tmpPathOld, () => {});
+                }
+            }
+        }
+
+        console.log(`Starting background conversion for: ${convKey} (via ensureConversion)`);
+        
+        let ffmpeg;
+        if (isNico) {
+            const info = getNicoStreamInfo(id);
+            if (!info) throw new Error("Could not fetch Niconico stream info");
+
+            const formats = info.formats || [];
+            const videoFormat = [...formats].reverse().find(f => f.vcodec !== 'none' && f.acodec === 'none');
+            const audioFormat = [...formats].reverse().find(f => f.vcodec === 'none' && f.acodec !== 'none');
+
+            if (!videoFormat || !audioFormat) throw new Error("Separate audio/video formats not found");
+
+            const videoUrl = videoFormat.url;
+            const audioUrl = audioFormat.url;
+            const cookies = videoFormat.cookies || '';
+            const userAgent = (videoFormat.http_headers && videoFormat.http_headers['User-Agent']) ||
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+
+            const headers = `Cookie: ${cookies}\r\nUser-Agent: ${userAgent}\r\n`;
+
+            ffmpeg = spawn('ffmpeg', [
+                '-headers', headers,
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '5',
+                '-i', videoUrl,
+                '-headers', headers,
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '5',
+                '-i', audioUrl,
+                '-map', '0:v',
+                '-map', '1:a',
+                '-f', 'mp4',
+                '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-y', tmpPath
+            ]);
+        } else {
+            let formatStr = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best';
+            if (quality === '1080p') {
+                formatStr = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best';
+            } else if (quality === '480p') {
+                formatStr = 'bestvideo[height<=480]+bestaudio/best[height<=480]/best';
+            } else if (quality === '360p') {
+                formatStr = 'bestvideo[height<=360]+bestaudio/best[height<=360]/best';
+            }
+
+            const directUrl = runYtDlp([
+                '-g', `https://www.youtube.com/watch?v=${id}`,
+                '-f', formatStr,
+                '--no-warnings',
+                '--no-playlist'
+            ], 25000).trim();
+
+            if (!directUrl) throw new Error("directUrl is empty");
+
+            const urls = directUrl.split('\n').map(u => u.trim()).filter(Boolean);
+
+            if (urls.length >= 2) {
+                ffmpeg = spawn('ffmpeg', [
+                    '-reconnect', '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max', '5',
+                    '-i', urls[0],
+                    '-reconnect', '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max', '5',
+                    '-i', urls[1],
+                    '-map', '0:v',
+                    '-map', '1:a',
+                    '-f', 'mp4',
+                    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+                    '-c:a', 'aac', '-b:a', '128k',
+                    '-y', tmpPath
+                ]);
+            } else {
+                ffmpeg = spawn('ffmpeg', [
+                    '-reconnect', '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max', '5',
+                    '-i', urls[0],
+                    '-f', 'mp4',
+                    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+                    '-c:a', 'aac', '-b:a', '128k',
+                    '-y', tmpPath
+                ]);
+            }
+        }
+
+        conversions.set(convKey, { proc: ffmpeg, lastSeen: Date.now() });
+
+        ffmpeg.on('close', (code) => {
+            console.log(`Conversion process closed for ${convKey} with code ${code}`);
+            const data = conversions.get(convKey);
+            if (data) {
+                data.proc = null;
+            }
+            if (code !== 0 && code !== null) {
+                console.log(`Conversion failed for ${convKey}. Cleaning up.`);
+                conversions.delete(convKey);
+                if (fs.existsSync(tmpPath)) {
+                    fs.unlink(tmpPath, () => { });
+                }
+            }
+        });
+
+        // ffmpegが起動してファイルが出力され始めるのを最大5秒待つ
+        await new Promise((resolve) => {
+            const checkFile = setInterval(() => {
+                if (getFileSize(tmpPath) > 0) {
+                    clearInterval(checkFile);
+                    resolve();
+                }
+            }, 250);
+            setTimeout(() => {
+                clearInterval(checkFile);
+                resolve();
+            }, 5000);
+        });
+    })();
+
+    startingConversions.set(convKey, promise);
+    try {
+        await promise;
+    } finally {
+        startingConversions.delete(convKey);
+    }
+}
+
 const TMP_DIR = path.join(__dirname, 'tmp');
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
 
@@ -1484,106 +1814,41 @@ app.get('/stream-bytes', async (req, res) => {
     const id = String(req.query.id || "").trim();
     const start = parseInt(req.query.start) || 0;
     const end = parseInt(req.query.end) || 0;
+    
+    // トークン検証と 1080p 制限
+    const token = req.query.token;
+    const session = SESSIONS.get(token);
+    const isAdmin = session && session.role === 'admin';
+    
+    let quality = req.query.quality || '480p';
+    if (quality === '1080p' && !isAdmin) {
+        quality = '720p'; // 一般ユーザーは 720p に強制制限
+    }
 
     if (!id || !/^[a-zA-Z0-9_-]{3,20}$/.test(id)) return res.status(400).send("Invalid ID");
 
-    const tmpPath = path.join(TMP_DIR, `${id}.mp4`);
+    const isNico = isNicoId(id);
+    const convKey = isNico ? id : `${id}_${quality}`;
+    const tmpPath = path.join(TMP_DIR, `${convKey}.mp4`);
 
-    // 初回リクエスト時、またはプロセスが死んでいる場合に変換を開始
-    if (!conversions.has(id)) {
-        console.log(`Starting background conversion for: ${id}`);
-        try {
-            let ffmpeg;
-            if (isNicoId(id)) {
-                console.log(`Resolving Niconico HLS for: ${id}`);
-                const info = getNicoStreamInfo(id);
-                if (!info) throw new Error("Could not fetch Niconico stream info");
-
-                const formats = info.formats || [];
-                const videoFormat = [...formats].reverse().find(f => f.vcodec !== 'none' && f.acodec === 'none');
-                const audioFormat = [...formats].reverse().find(f => f.vcodec === 'none' && f.acodec !== 'none');
-
-                if (!videoFormat || !audioFormat) throw new Error("Separate audio/video formats not found");
-
-                const videoUrl = videoFormat.url;
-                const audioUrl = audioFormat.url;
-                const cookies = videoFormat.cookies || '';
-                const userAgent = (videoFormat.http_headers && videoFormat.http_headers['User-Agent']) ||
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-
-                const headers = `Cookie: ${cookies}\r\nUser-Agent: ${userAgent}\r\n`;
-
-                ffmpeg = spawn('ffmpeg', [
-                    '-headers', headers,
-                    '-i', videoUrl,
-                    '-headers', headers,
-                    '-i', audioUrl,
-                    '-map', '0:v',
-                    '-map', '1:a',
-                    '-f', 'mp4',
-                    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
-                    '-c:a', 'aac', '-b:a', '128k',
-                    '-y', tmpPath
-                ]);
-            } else {
-                // ライブ配信かどうかを取得 (キャッシュを活用)
-                const formats = 'best[height<=720]/best'; // ライブ時はHLSが優先されることが多い
-                const directUrl = runYtDlp([
-                    '-g', `https://www.youtube.com/watch?v=${id}`,
-                    '-f', formats,
-                    '--no-warnings',
-                    '--no-playlist'
-                ], 25000).trim();
-
-                if (!directUrl) throw new Error("directUrl is empty");
-
-                ffmpeg = spawn('ffmpeg', [
-                    '-i', directUrl,
-                    '-f', 'mp4',
-                    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
-                    '-c:a', 'aac', '-b:a', '128k',
-                    '-y', tmpPath
-                ]);
-            }
-
-            conversions.set(id, { proc: ffmpeg, lastSeen: Date.now() });
-
-            ffmpeg.on('close', (code) => {
-                console.log(`Conversion process closed for ${id} with code ${code}`);
-                const data = conversions.get(id);
-                if (data) {
-                    data.proc = null;
-                }
-                if (code !== 0) {
-                    console.log(`Conversion failed. Removing conversion record and temp file for ${id}.`);
-                    conversions.delete(id);
-                    const tmpPath = path.join(TMP_DIR, `${id}.mp4`);
-                    if (fs.existsSync(tmpPath)) {
-                        fs.unlink(tmpPath, () => { });
-                    }
-                }
-            });
-
-            // 最初の書き込みを待つ
-            await new Promise(r => setTimeout(r, 2000));
-        } catch (e) {
-            console.error('Conversion start error:', e.message);
-            return res.status(500).end();
-        }
-    } else {
-        // アクセス時刻を更新
-        const data = conversions.get(id);
-        data.lastSeen = Date.now();
+    try {
+        await ensureConversion(id, quality);
+    } catch (e) {
+        console.error('Conversion start error:', e.message);
+        return res.status(500).end();
     }
 
     // ファイルから指定範囲を読み取る
     try {
         let attempts = 0;
+        const maxAttempts = 40;
         while (!fs.existsSync(tmpPath) || fs.statSync(tmpPath).size <= start) {
-            if (attempts > 5) return res.status(404).send("Not ready");
-            await new Promise(r => setTimeout(r, 1000));
+            const conv = conversions.get(convKey);
+            if (!conv || (!conv.proc && getFileSize(tmpPath) <= start)) {
+                return res.status(404).send("Not ready");
+            }
+            if (attempts > maxAttempts) return res.status(404).send("Not ready");
+            await new Promise(r => setTimeout(r, 500));
             attempts++;
         }
 
@@ -1608,13 +1873,20 @@ app.get('/stream-bytes', async (req, res) => {
 // 明示的な停止エンドポイント
 app.get('/stop-stream', (req, res) => {
     const id = String(req.query.id || "").trim();
-    if (id && /^[a-zA-Z0-9_-]{3,20}$/.test(id) && conversions.has(id)) {
-        console.log(`Explicitly stopping conversion: ${id}`);
-        const data = conversions.get(id);
-        if (data.proc) data.proc.kill();
-        conversions.delete(id);
-        const tmpPath = path.join(TMP_DIR, `${id}.mp4`);
-        if (fs.existsSync(tmpPath)) fs.unlink(tmpPath, () => { });
+    if (id && /^[a-zA-Z0-9_-]{3,20}$/.test(id)) {
+        console.log(`Explicitly stopping conversion for id: ${id}`);
+        for (const [key, data] of conversions.entries()) {
+            if (key === id || key.startsWith(id + '_')) {
+                if (data.proc) {
+                    try { data.proc.kill('SIGKILL'); } catch (e) { }
+                }
+                conversions.delete(key);
+                const tmpPath = path.join(TMP_DIR, `${key}.mp4`);
+                if (fs.existsSync(tmpPath)) {
+                    fs.unlink(tmpPath, () => { });
+                }
+            }
+        }
     }
     res.send("OK");
 });
@@ -1642,6 +1914,9 @@ app.get('/stream-part', async (req, res) => {
         // ffmpegで指定秒数から断片化MP4として出力
         const ffmpegArgs = [
             '-ss', ss,
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
             '-i', directUrl,
             '-t', duration,
             '-f', 'mp4',
@@ -1687,25 +1962,15 @@ app.get('/stream', async (req, res) => {
                 '--no-warnings'
             ], 15000).trim();
         } else if (!isNico) {
-            // YouTube動画/ライブ
-            const quality = req.query.quality || '720p';
-            let formatStr = 'best[height<=720][ext=mp4]/best[height<=720]/best';
-            if (quality === '1080p') {
-                formatStr = 'best[height<=1080][ext=mp4]/best[height<=1080]/best';
-            } else if (quality === '480p') {
-                formatStr = 'best[height<=480][ext=mp4]/best[height<=480]/best';
-            } else if (quality === '360p') {
-                formatStr = 'best[height<=360][ext=mp4]/best[height<=360]/best';
-            }
-
+            // YouTubeライブ判定のためURLを取得 (通常動画なら18番などを優先してm3u8化を防ぐ)
             directUrl = runYtDlp([
                 '-g', `https://www.youtube.com/watch?v=${id}`,
-                '-f', formatStr,
+                '-f', '18/best',
                 '--no-warnings',
                 '--no-playlist'
             ], 25000).trim();
 
-            if (directUrl.includes('.m3u8') || directUrl.includes('manifest/hls_live_itags') || directUrl.includes('live=1')) {
+            if (directUrl.includes('manifest/hls_live_itags') || directUrl.includes('live=1')) {
                 isLive = true;
             }
         }
@@ -1716,6 +1981,9 @@ app.get('/stream', async (req, res) => {
             console.log(`[Stream] Starting live direct transcode pipe for: ${id}`);
 
             const ffmpegArgs = [
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '5',
                 '-i', directUrl,
                 '-c:v', 'libx264',
                 '-preset', 'ultrafast',
@@ -1740,124 +2008,52 @@ app.get('/stream', async (req, res) => {
             return;
         }
 
-        // 3. 通常のニコニコ動画処理
-        if (isNico) {
-            const tmpPath = path.join(TMP_DIR, `${id}.mp4`);
-            if (!conversions.has(id)) {
-                console.log(`Starting background conversion for: ${id} via /stream`);
-                try {
-                    const info = getNicoStreamInfo(id);
-                    if (!info) throw new Error("Could not fetch Niconico stream info");
+        // トークン検証と 1080p 制限
+        const token = req.query.token;
+        const session = SESSIONS.get(token);
+        const isAdmin = session && session.role === 'admin';
 
-                    const formats = info.formats || [];
-                    const videoFormat = [...formats].reverse().find(f => f.vcodec !== 'none' && f.acodec === 'none');
-                    const audioFormat = [...formats].reverse().find(f => f.vcodec === 'none' && f.acodec !== 'none');
-
-                    if (!videoFormat || !audioFormat) throw new Error("Separate audio/video formats not found");
-
-                    const videoUrl = videoFormat.url;
-                    const audioUrl = audioFormat.url;
-                    const cookies = videoFormat.cookies || '';
-                    const userAgent = (videoFormat.http_headers && videoFormat.http_headers['User-Agent']) ||
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-
-                    const headers = `Cookie: ${cookies}\r\nUser-Agent: ${userAgent}\r\n`;
-
-                    const ffmpeg = spawn('ffmpeg', [
-                        '-headers', headers,
-                        '-i', videoUrl,
-                        '-headers', headers,
-                        '-i', audioUrl,
-                        '-map', '0:v',
-                        '-map', '1:a',
-                        '-f', 'mp4',
-                        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-                        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
-                        '-c:a', 'aac', '-b:a', '128k',
-                        '-y', tmpPath
-                    ]);
-
-                    conversions.set(id, { proc: ffmpeg, lastSeen: Date.now() });
-
-                    ffmpeg.on('close', (code) => {
-                        console.log(`Conversion process closed for ${id} with code ${code} (via /stream)`);
-                        const data = conversions.get(id);
-                        if (data) {
-                            data.proc = null;
-                        }
-                        if (code !== 0) {
-                            console.log(`Conversion failed (via /stream). Removing conversion record and temp file for ${id}.`);
-                            conversions.delete(id);
-                            if (fs.existsSync(tmpPath)) {
-                                fs.unlink(tmpPath, () => { });
-                            }
-                        }
-                    });
-
-                    // 最初の書き込みを待つ
-                    await new Promise(r => setTimeout(r, 2000));
-                } catch (e) {
-                    console.error('Nico Stream transcode start error:', e.message);
-                    return res.status(500).send("Transcoding failed");
-                }
-            } else {
-                conversions.get(id).lastSeen = Date.now();
-            }
-
-            // ファイルの進捗を待つ
-            let attempts = 0;
-            while (!fs.existsSync(tmpPath) || fs.statSync(tmpPath).size < 512 * 1024) { // 少なくとも512KB書き込まれるのを待つ
-                if (attempts > 15) return res.status(404).send("Stream not ready");
-                await new Promise(r => setTimeout(r, 1000));
-                attempts++;
-            }
-
-            res.setHeader('Content-Type', 'video/mp4');
-            res.setHeader('Accept-Ranges', 'bytes');
-            return res.sendFile(tmpPath);
+        let quality = req.query.quality || '480p';
+        if (quality === '1080p' && !isAdmin) {
+            quality = '720p'; // 一般ユーザーは 720p に強制制限
         }
 
-        // 4. 通常のYouTube動画ストリーム処理 (directUrlは解決済み)
-        if (!directUrl) throw new Error("Could not get direct URL");
+        const convKey = isNico ? id : `${id}_${quality}`;
+        const tmpPath = path.join(TMP_DIR, `${convKey}.mp4`);
 
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://www.youtube.com/'
-        };
-
-        if (req.headers.range) {
-            headers['Range'] = req.headers.range;
+        try {
+            await ensureConversion(id, quality);
+        } catch (e) {
+            console.error('Stream transcode start error:', e.message);
+            return res.status(500).send("Transcoding failed");
         }
 
-        const response = await axios({
-            method: 'get',
-            url: directUrl,
-            responseType: 'stream',
-            headers: headers,
-            timeout: 10000
-        });
-
-        // iOS Safari等のシークと再生のために、ヘッダーとステータスを厳密に書き込む
-        const resHeaders = {
-            'Content-Type': 'video/mp4',
-            'Accept-Ranges': 'bytes'
-        };
-
-        // 元のレスポンスヘッダーから必要なもの（Content-Length, Content-Range等）を抽出して上書きを防ぐ
-        Object.keys(response.headers).forEach(key => {
-            const lowerKey = key.toLowerCase();
-            if (['content-length', 'content-range', 'cache-control'].includes(lowerKey)) {
-                resHeaders[key] = response.headers[key];
+        // ファイルの進捗を待つ (少なくとも192KB書き込まれるのを待つ)
+        let attempts = 0;
+        const maxAttempts = 40;
+        while (getFileSize(tmpPath) < 192 * 1024) {
+            const conv = conversions.get(convKey);
+            if (!conv || (!conv.proc && getFileSize(tmpPath) < 192 * 1024)) {
+                return res.status(404).send("Stream not ready");
             }
-        });
+            if (attempts > maxAttempts) return res.status(404).send("Stream not ready");
+            await new Promise(r => setTimeout(r, 500));
+            attempts++;
+        }
 
-        res.writeHead(response.status, resHeaders);
-        response.data.pipe(res);
+        if (req.query.download === '1') {
+            const rawTitle = req.query.title || '';
+            const sanitizedTitle = rawTitle ? String(rawTitle).replace(/[\\/:*?"<>|]/g, '_') : id;
+            return res.download(tmpPath, `${sanitizedTitle}_${quality}.mp4`);
+        }
 
-        req.on('close', () => {
-            if (response.data && response.data.destroy) response.data.destroy();
-        });
-
+        const sendOptions = {
+            headers: {
+                'Content-Type': 'video/mp4',
+                'Accept-Ranges': 'bytes'
+            }
+        };
+        return res.sendFile(tmpPath, sendOptions);
     } catch (e) {
         console.error('Stream Proxy Error:', e.message);
         if (!res.headersSent) {
@@ -2398,4 +2594,26 @@ app.listen(PORT, () => {
     console.log(`  YT Proxy Server is now READY`);
     console.log(`  Local URL: http://localhost:${PORT}`);
     console.log(`=========================================`);
+});
+
+// プロセスクラッシュや終了時のゾンビ一掃制御 (SIGTERM, SIGINT, Exception等)
+process.on('exit', () => {
+    killAllConversions();
+});
+process.on('SIGINT', () => {
+    console.log('[System] SIGINT received. Cleaning up...');
+    killAllConversions();
+    process.exit(0);
+});
+process.on('SIGTERM', () => {
+    console.log('[System] SIGTERM received. Cleaning up...');
+    killAllConversions();
+    process.exit(0);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[System] Uncaught Exception:', err.message || err);
+    if (err.stack) console.error(err.stack);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[System] Unhandled Rejection at:', promise, 'reason:', reason);
 });

@@ -29,3 +29,5 @@ test_video.json
 scratch/
 test*.js
 test*.txt
+
+logs/

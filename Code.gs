@@ -9,6 +9,71 @@ function doPost(e) {
 }
 
 function doGet(e) {
+  if (e.parameter.action === 'download') {
+    try {
+      const id = e.parameter.id;
+      const quality = e.parameter.quality || '480p';
+      const token = e.parameter.token || '';
+      const title = e.parameter.title || '';
+      const pcUrl = getUrl();
+      if (!pcUrl) throw new Error("PC URL not set");
+      
+      const tStr = title ? `&title=${encodeURIComponent(title)}` : '';
+      const targetUrl = `${pcUrl}/stream?id=${id}&quality=${quality}&download=1&token=${encodeURIComponent(token)}${tStr}`;
+      const res = UrlFetchApp.fetch(targetUrl, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) {
+        throw new Error(`Failed to fetch from PC server (status: ${res.getResponseCode()})`);
+      }
+      
+      const base64Data = Utilities.base64Encode(res.getBlob().getBytes());
+      const sanitizedTitle = title ? title.replace(/[\\/:*?"<>|]/g, '_') : id;
+      const filename = `${sanitizedTitle}_${quality}.mp4`;
+      
+      const htmlOutput = `
+      <!DOCTYPE html>
+      <html>
+      <head><title>Downloading...</title></head>
+      <body style="background:#0f172a; color:#f8fafc; font-family:sans-serif; text-align:center; padding-top:100px;">
+        <h2>動画を生成しました</h2>
+        <p>まもなくダウンロードが開始されます。開始されない場合は以下をクリックしてください。</p>
+        <div style="margin-top:20px;">
+          <a id="dl-link" href="#" style="background:#0284c7; color:#fff; padding:10px 20px; text-decoration:none; border-radius:6px; font-weight:bold;">手動でダウンロード</a>
+        </div>
+        <script>
+          var base64Data = "${base64Data}";
+          var filename = "${filename}";
+          
+          var binary = atob(base64Data);
+          var bytes = new Uint8Array(binary.length);
+          for (var i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+          }
+          var blob = new Blob([bytes.buffer], { type: "video/mp4" });
+          var blobUrl = URL.createObjectURL(blob);
+          
+          var link = document.getElementById("dl-link");
+          link.href = blobUrl;
+          link.download = filename;
+          
+          var a = document.createElement("a");
+          a.href = blobUrl;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        </script>
+      </body>
+      </html>
+      `;
+      
+      return HtmlService.createHtmlOutput(htmlOutput)
+        .setTitle("Downloading Video...")
+        .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+        
+    } catch (err) {
+      return HtmlService.createHtmlOutput(`<h2 style="color:red; text-align:center; margin-top:40px;">ダウンロードに失敗しました</h2><p style="text-align:center;">${err.toString()}</p>`);
+    }
+  }
 
   if (e.parameter.action === 'getTrends') {
     try {
@@ -87,11 +152,13 @@ function proxyVideoChunk(id, ss, t) {
   } catch (e) { return null; }
 }
 
-function proxyVideoBytes(id, start, end) {
+function proxyVideoBytes(id, start, end, quality, token) {
   const u = getUrl();
   if (!u) return null;
+  const qStr = quality ? `&quality=${encodeURIComponent(quality)}` : '';
+  const tStr = token ? `&token=${encodeURIComponent(token)}` : '';
   try {
-    const res = UrlFetchApp.fetch(`${u}/stream-bytes?id=${id}&start=${start}&end=${end}`, { muteHttpExceptions: true });
+    const res = UrlFetchApp.fetch(`${u}/stream-bytes?id=${id}&start=${start}&end=${end}${qStr}${tStr}`, { muteHttpExceptions: true });
     return res.getResponseCode() === 404 ? "RETRY" : Utilities.base64Encode(res.getBlob().getBytes());
   } catch (e) { return null; }
 }
@@ -158,8 +225,29 @@ function fetchYTTrends() {
   const trendsJson = JSON.parse(getCleanText(widgetUrl));
   const lists = trendsJson.default.rankedList;
 
+    return {
+      top: (lists[0] && lists[0].rankedKeyword) ? lists[0].rankedKeyword.map(k => k.query) : [],
+      rising: (lists[1] && lists[1].rankedKeyword) ? lists[1].rankedKeyword.map(k => k.query) : []
+    };
+}
+
+function downloadVideo(id, quality, token, title) {
+  const pcUrl = getUrl();
+  if (!pcUrl) throw new Error("PC URL not set");
+  
+  const tStr = title ? `&title=${encodeURIComponent(title)}` : '';
+  const targetUrl = `${pcUrl}/stream?id=${id}&quality=${quality || '480p'}&download=1&token=${encodeURIComponent(token)}${tStr}`;
+  const res = UrlFetchApp.fetch(targetUrl, { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) {
+    throw new Error(`Failed to fetch from PC server (status: ${res.getResponseCode()})`);
+  }
+  
+  const base64Data = Utilities.base64Encode(res.getBlob().getBytes());
+  const sanitizedTitle = title ? title.replace(/[\\/:*?"<>|]/g, '_') : id;
+  const filename = `${sanitizedTitle}_${quality || '480p'}.mp4`;
   return {
-    top: (lists[0] && lists[0].rankedKeyword) ? lists[0].rankedKeyword.map(k => k.query) : [],
-    rising: (lists[1] && lists[1].rankedKeyword) ? lists[1].rankedKeyword.map(k => k.query) : []
+    success: true,
+    base64Data: base64Data,
+    filename: filename
   };
 }

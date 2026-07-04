@@ -1057,6 +1057,23 @@
 
 <body>
 
+    <!-- Confirm Modal for Long Downloads -->
+    <div id="confirm-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.75); backdrop-filter:blur(8px); z-index:9999; justify-content:center; align-items:center; opacity:0; transition:opacity 0.3s ease;">
+        <div style="background:#1e1e1e; border:1px solid #333; width:90%; max-width:400px; padding:24px; border-radius:16px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); transform:scale(0.9); transition:transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); text-align:center;">
+            <div style="background:#fef3c7; color:#d97706; width:48px; height:48px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; margin-bottom:16px;">
+                <svg style="width:28px; height:28px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+            </div>
+            <h3 id="confirm-modal-title" style="margin:0 0 8px 0; font-size:18px; font-weight:700; color:#fff;">ダウンロードのご注意</h3>
+            <p id="confirm-modal-message" style="margin:0 0 24px 0; color:#aaa; font-size:14px; line-height:1.6; text-align:center;"></p>
+            <div style="display:flex; justify-content:center; gap:12px;">
+                <button id="confirm-modal-cancel" style="background:rgba(255,255,255,0.08); color:#fff; border:none; padding:10px 20px; border-radius:20px; cursor:pointer; font-weight:600; font-size:14px; transition:background 0.2s; outline:none;">キャンセル</button>
+                <button id="confirm-modal-ok" style="background:#0284c7; color:#fff; border:none; padding:10px 20px; border-radius:20px; cursor:pointer; font-weight:600; font-size:14px; transition:background 0.2s; outline:none;">ダウンロード開始</button>
+            </div>
+        </div>
+    </div>
+
     <aside class="sidebar" id="sidebar">
         <a class="sidebar-item active" onclick="showView('home')"><svg viewBox="0 0 24 24">
                 <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" />
@@ -1198,6 +1215,76 @@
         </div>
     </div>
     <script>
+        var activeConfirmCallback = null;
+
+        function showConfirmModal(title, message, onConfirm) {
+            var overlay = document.getElementById('confirm-modal-overlay');
+            var titleEl = document.getElementById('confirm-modal-title');
+            var msgEl = document.getElementById('confirm-modal-message');
+            if (!overlay || !titleEl || !msgEl) return;
+
+            titleEl.textContent = title;
+            msgEl.textContent = message;
+            activeConfirmCallback = onConfirm;
+
+            overlay.style.display = 'flex';
+            overlay.offsetHeight; 
+            overlay.style.opacity = '1';
+            overlay.firstElementChild.style.transform = 'scale(1)';
+        }
+
+        function hideConfirmModal() {
+            var overlay = document.getElementById('confirm-modal-overlay');
+            if (!overlay) return;
+            overlay.style.opacity = '0';
+            overlay.firstElementChild.style.transform = 'scale(0.9)';
+            setTimeout(function () {
+                overlay.style.display = 'none';
+                activeConfirmCallback = null;
+            }, 300);
+        }
+
+        function showToast(message, type) {
+            var container = document.getElementById('toast-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'toast-container';
+                container.setAttribute('style', 'position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px;');
+                document.body.appendChild(container);
+            }
+            
+            var toast = document.createElement('div');
+            var bgColor = '#1e1e1e';
+            var iconSvg = '';
+            
+            if (type === 'success') {
+                bgColor = '#065f46';
+                iconSvg = '<svg style="width:20px;height:20px;color:#34d399;flex-shrink:0;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>';
+            } else {
+                bgColor = '#1e1e1e';
+                iconSvg = '<svg style="width:20px;height:20px;color:#3ea6ff;flex-shrink:0;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>';
+            }
+            
+            toast.setAttribute('style', 'background:' + bgColor + '; border:1px solid rgba(255,255,255,0.1); color:#fff; padding:12px 20px; border-radius:10px; box-shadow:0 10px 15px -3px rgba(0,0,0,0.3); display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; min-width:250px; transform:translateY(20px); opacity:0; transition:all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);');
+            toast.innerHTML = iconSvg + '<span>' + message + '</span>';
+            
+            container.appendChild(toast);
+            
+            toast.offsetHeight;
+            toast.style.transform = 'translateY(0)';
+            toast.style.opacity = '1';
+            
+            setTimeout(function() {
+                toast.style.transform = 'translateY(-20px)';
+                toast.style.opacity = '0';
+                setTimeout(function() {
+                    if (toast.parentNode) {
+                        toast.parentNode.removeChild(toast);
+                    }
+                }, 300);
+            }, 4000);
+        }
+
         var currentUser = null;
         var token = localStorage.getItem('token');
         var adminSavedToken = null; // 管理者のセッション退避用
@@ -1209,10 +1296,11 @@
         var currentSourceBuffer = null;
         var currentByte = 0;
         var isFetching = false;
-        var CHUNK_SIZE = 3 * 1024 * 1024;
+        var CHUNK_SIZE = 1 * 1024 * 1024;
         var apiCache = new Map();
         var navStack = []; // Internal navigation stack for back button
-        var currentQuality = localStorage.getItem('preferred_quality') || '720p';
+        var currentQuality = localStorage.getItem('preferred_quality') || '480p';
+        var bufferInterval = null;
 
         function h(s) { return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/`/g, '&#96;') : ''; }
         function j(s) { return s ? String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\n/g, '\\n') : ''; }
@@ -1392,6 +1480,10 @@
         }
 
         function nav(view, id, q, tab, replace) {
+            if (bufferInterval) {
+                clearInterval(bufferInterval);
+                bufferInterval = null;
+            }
             if (!id) id = '';
             if (!q) q = '';
             if (!tab) tab = '';
@@ -1801,12 +1893,19 @@
                 '<div style="font-size:12px; color:#aaa;">' + (info.view_count || 0).toLocaleString() + ' \u56de\u8996\u8074</div>' +
                 '</div>' +
                 '<select id="quality-select" style="background:#272727; color:#fff; border:1px solid #444; padding:6px 12px; border-radius:18px; font-weight:600; cursor:pointer; outline:none;' + (isNico ? 'display:none;' : '') + '">' +
-                '<option value="1080p">1080p</option>' +
+                (currentUser && currentUser.role === 'admin' ? '<option value="1080p">1080p</option>' : '') +
                 '<option value="720p">720p</option>' +
                 '<option value="480p">480p</option>' +
                 '<option value="360p">360p</option>' +
                 '</select>' +
                 '<button id="fav-btn" class="btn" style="width:auto; padding:0 16px; height:36px; border-radius:36px; background:rgba(255,255,255,0.1); color:#fff; font-weight:600;">\u304a\u6c17\u306b\u5165\u308a\u306b\u8ffd\u52a0</button>' +
+                '<button id="download-btn" class="btn" style="width:auto; padding:0 16px; height:36px; border-radius:36px; background:rgba(255,255,255,0.1); color:#fff; font-weight:600; margin-left:8px;">\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9</button>' +
+                '<label style="display:inline-flex; align-items:center; cursor:pointer; margin-left:12px; font-weight:600; font-size:14px; color:#fff; user-select:none;">' +
+                '<input type="checkbox" id="autoplay-toggle" style="display:none;" />' +
+                '<span id="autoplay-switch" style="width:36px; height:20px; background:rgba(255,255,255,0.2); border-radius:10px; position:relative; display:inline-block; margin-right:8px; transition:background 0.2s;">' +
+                '<span id="autoplay-knob" style="width:16px; height:16px; background:#fff; border-radius:50%; position:absolute; top:2px; left:2px; transition:left 0.2s;"></span>' +
+                '</span>\u81ea\u52d5\u518d\u751f' +
+                '</label>' +
                 '</div>' +
                 '<div style="background:#272727; padding:16px; border-radius:12px; font-size:14px; white-space:pre-wrap; line-height:1.6; max-height:200px; overflow-y:auto;">' + formatDescriptionHtml(info.description || '', isNico) + '</div>' +
                 '<div style="margin-top:24px;"><h3 style="margin-bottom:20px;">\u30b3\u30e1\u30f3\u30c8 (' + commentCount + ')</h3><div id="comments-section">' + commentsHtml + '</div></div>' +
@@ -1819,10 +1918,119 @@
 
             loadLazyImages();
             var player = document.getElementById('v-player');
+            
+            // 自動再生の初期化とバインド
+            var autoplayToggle = document.getElementById('autoplay-toggle');
+            var autoplaySwitch = document.getElementById('autoplay-switch');
+            var autoplayKnob = document.getElementById('autoplay-knob');
+            
+            function updateAutoplayUI(enabled) {
+                if (autoplayToggle) autoplayToggle.checked = enabled;
+                if (autoplaySwitch) autoplaySwitch.style.background = enabled ? '#0284c7' : 'rgba(255,255,255,0.2)';
+                if (autoplayKnob) autoplayKnob.style.left = enabled ? '18px' : '2px';
+            }
+
+            var autoplayEnabled = localStorage.getItem('autoplay_enabled') === 'true';
+            updateAutoplayUI(autoplayEnabled);
+
+            if (autoplayToggle) {
+                autoplayToggle.addEventListener('change', function () {
+                    var isChecked = this.checked;
+                    localStorage.setItem('autoplay_enabled', isChecked ? 'true' : 'false');
+                    updateAutoplayUI(isChecked);
+                });
+            }
+
+            if (player) {
+                player.addEventListener('ended', function () {
+                    console.log("Video playback ended.");
+                    var isAutoplay = localStorage.getItem('autoplay_enabled') === 'true';
+                    if (isAutoplay) {
+                        var firstRelated = document.querySelector('.related-area .video-card');
+                        if (firstRelated) {
+                            console.log("Autoplay: Clicking next video card.");
+                            firstRelated.click();
+                        }
+                    }
+                });
+
+                // 自動接続・フリーズ回復ロジック
+                var isMse = typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined';
+                var lastPlayTime = 0;
+                var retryCount = 0;
+                var maxRetries = 3;
+                var waitingTimer = null;
+
+                player.addEventListener('timeupdate', function () {
+                    if (player.currentTime > 0) {
+                        lastPlayTime = player.currentTime;
+                    }
+                });
+
+                player.addEventListener('playing', function () {
+                    retryCount = 0;
+                    if (waitingTimer) {
+                        clearTimeout(waitingTimer);
+                        waitingTimer = null;
+                    }
+                });
+
+                function triggerRecovery(reason) {
+                    if (isMse) {
+                        if (retryCount < maxRetries) {
+                            retryCount++;
+                            showToast("通信が不安定なため、ストリームを再起動しています... (" + retryCount + "/" + maxRetries + ")", "info");
+                            var resumeTime = lastPlayTime;
+                            initMSEPlayer(player, id);
+                            player.addEventListener('loadedmetadata', function onLoaded() {
+                                player.currentTime = resumeTime;
+                                player.play().catch(function(err) { console.error("Resume play failed:", err); });
+                                player.removeEventListener('loadedmetadata', onLoaded);
+                            });
+                        } else {
+                            showToast("再生エラーが解決しませんでした。ページを再読み込みしてください。", "error");
+                        }
+                        return;
+                    }
+
+                    if (retryCount < maxRetries) {
+                        retryCount++;
+                        showToast("接続が途切れたため、自動再接続しています... (" + retryCount + "/" + maxRetries + ")", "info");
+                        var resumeTime = lastPlayTime;
+                        var currentSrc = player.src;
+                        player.src = '';
+                        player.load();
+                        player.src = currentSrc;
+                        player.load();
+                        player.addEventListener('loadedmetadata', function onLoaded() {
+                            player.currentTime = resumeTime;
+                            player.play().catch(function(err) { console.error("Resume play failed:", err); });
+                            player.removeEventListener('loadedmetadata', onLoaded);
+                        });
+                    } else {
+                        showToast("接続を復旧できませんでした。画質を下げるか、ページを再読み込みしてください。", "error");
+                    }
+                }
+
+                player.addEventListener('error', function (e) {
+                    console.error("Player error event fired:", player.error);
+                    triggerRecovery("Error");
+                });
+
+                player.addEventListener('waiting', function () {
+                    if (waitingTimer) clearTimeout(waitingTimer);
+                    waitingTimer = setTimeout(function () {
+                        if (player.paused || player.ended) return;
+                        console.warn("Video stalled (waiting event timeout). Triggering recovery...");
+                        triggerRecovery("Stalled");
+                    }, 8000);
+                });
+            }
+
             if (typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined') {
                 initMSEPlayer(player, id);
             } else {
-                player.src = '{{TUNNEL_URL}}/stream?id=' + id + '&quality=' + currentQuality;
+                player.src = '{{TUNNEL_URL}}/stream?id=' + id + '&quality=' + currentQuality + '&token=' + encodeURIComponent(token);
             }
 
             var qSel = document.getElementById('quality-select');
@@ -1840,6 +2048,86 @@
                 });
             }
 
+            var dlBtn = document.getElementById('download-btn');
+            if (dlBtn) {
+                dlBtn.addEventListener('click', function () {
+                    showConfirmModal(
+                        'ダウンロードのご注意',
+                        '高画質化や長尺動画の場合、サーバー側のトランスコードとGAS経由のダウンロードデータ転送完了までに数分〜十数分かかる場合があります。このまま開始しますか？',
+                        function () {
+                            var baseUrl = '{{GAS_URL}}';
+                            var isGas = true;
+                            if (baseUrl.indexOf('{{') === 0) {
+                                isGas = false;
+                                baseUrl = '{{TUNNEL_URL}}';
+                                if (baseUrl.indexOf('{{') === 0) {
+                                    baseUrl = window.location.origin;
+                                }
+                            }
+
+                            showToast('ダウンロードを開始しました。バックグラウンドで処理中です...', 'info');
+
+                            var videoTitle = info.title ? info.title.replace(/[\\/:*?"<>|]/g, '_') : id;
+
+                            if (isGas && typeof google !== 'undefined' && google.script && google.script.run) {
+                                google.script.run
+                                    .withSuccessHandler(function (res) {
+                                        if (res && res.success && res.base64Data) {
+                                            try {
+                                                var binary = atob(res.base64Data);
+                                                var bytes = new Uint8Array(binary.length);
+                                                for (var i = 0; i < binary.length; i++) {
+                                                    bytes[i] = binary.charCodeAt(i);
+                                                }
+                                                var blob = new Blob([bytes.buffer], { type: 'video/mp4' });
+                                                var link = document.createElement('a');
+                                                link.href = URL.createObjectURL(blob);
+                                                link.download = res.filename || (videoTitle + "_" + currentQuality + ".mp4");
+                                                document.body.appendChild(link);
+                                                link.click();
+                                                document.body.removeChild(link);
+                                                showToast('ダウンロードが完了しました！', 'success');
+                                            } catch (e) {
+                                                console.error("Base64 decode error:", e);
+                                                showToast('ダウンロードデータの処理に失敗しました。', 'error');
+                                            }
+                                        } else {
+                                            showToast('ダウンロードに失敗しました: ' + ((res && res.error) || 'データなし'), 'error');
+                                        }
+                                    })
+                                    .withFailureHandler(function (err) {
+                                        console.error("GAS download error:", err);
+                                        showToast('ダウンロードに失敗しました: ' + (err.message || '通信エラー'), 'error');
+                                    })
+                                    .downloadVideo(id, currentQuality, token, info.title);
+                            } else {
+                                var dlUrl = baseUrl + '/stream?id=' + id + '&quality=' + currentQuality + '&download=1&token=' + encodeURIComponent(token) + '&title=' + encodeURIComponent(info.title || '');
+                                fetch(dlUrl)
+                                    .then(function (res) {
+                                        if (!res.ok) {
+                                            throw new Error('サーバーがエラーを返しました (Status: ' + res.status + ')');
+                                        }
+                                        return res.blob();
+                                    })
+                                    .then(function (blob) {
+                                        var link = document.createElement('a');
+                                        link.href = URL.createObjectURL(blob);
+                                        link.download = videoTitle + "_" + currentQuality + ".mp4";
+                                        document.body.appendChild(link);
+                                        link.click();
+                                        document.body.removeChild(link);
+                                        showToast('ダウンロードが完了しました！', 'success');
+                                    })
+                                    .catch(function (err) {
+                                        console.error("Fetch download error:", err);
+                                        showToast('ダウンロードに失敗しました: ' + (err.message || '通信エラー'), 'error');
+                                    });
+                            }
+                        }
+                    );
+                });
+            }
+
             api('/api/favorites/check', { id: id }).then(function (res) {
                 updateFavoriteButton(res.isFavorite);
             });
@@ -1847,6 +2135,10 @@
 
         // ===== MSE Streaming =====
         function initMSEPlayer(player, id) {
+            if (bufferInterval) {
+                clearInterval(bufferInterval);
+                bufferInterval = null;
+            }
             currentMediaSource = new MediaSource();
             player.src = URL.createObjectURL(currentMediaSource);
             currentByte = 0;
@@ -1858,25 +2150,69 @@
                     fetchNextChunk(id);
                 } catch (e) { console.error("MSE Init Error:", e); }
             });
+            // 3秒おきにバッファ状態をチェックし、ロードが途切れるのを防ぐ
+            bufferInterval = setInterval(function () {
+                checkBuffer(player, id);
+            }, 3000);
         }
 
-        function fetchNextChunk(id) {
+        function fetchNextChunk(id, retryCount) {
+            if (!retryCount) retryCount = 0;
             if (isFetching || !currentSourceBuffer || currentMediaSource.readyState !== 'open') return;
             isFetching = true;
             var start = currentByte;
             var end = start + CHUNK_SIZE;
             google.script.run
                 .withSuccessHandler(function (base64) {
-                    if (base64 === "RETRY") { setTimeout(function () { isFetching = false; fetchNextChunk(id); }, 2000); return; }
-                    if (!base64 || base64.length < 10) { isFetching = false; return; }
+                    if (base64 === "RETRY") {
+                        setTimeout(function () {
+                            isFetching = false;
+                            fetchNextChunk(id, 0);
+                        }, 2000);
+                        return;
+                    }
+                    if (!base64 || base64.length < 10) {
+                        isFetching = false;
+                        if (currentMediaSource && currentMediaSource.readyState === 'open') {
+                            var finalizeStream = function() {
+                                if (currentSourceBuffer && !currentSourceBuffer.updating) {
+                                    try {
+                                        currentMediaSource.endOfStream();
+                                        console.log("MediaSource stream finalized.");
+                                    } catch (e) {
+                                        console.error("endOfStream error:", e);
+                                    }
+                                    if (bufferInterval) {
+                                        clearInterval(bufferInterval);
+                                        bufferInterval = null;
+                                    }
+                                } else {
+                                    setTimeout(finalizeStream, 100);
+                                }
+                            };
+                            finalizeStream();
+                        }
+                        return;
+                    }
                     var binary = atob(base64);
                     var bytes = new Uint8Array(binary.length);
                     for (var k = 0; k < binary.length; k++) bytes[k] = binary.charCodeAt(k);
                     currentSourceBuffer.appendBuffer(bytes.buffer);
                     currentByte += binary.length;
                 })
-                .withFailureHandler(function () { isFetching = false; })
-                .proxyVideoBytes(id, start, end);
+                .withFailureHandler(function (err) {
+                    console.error("fetchNextChunk failure:", err);
+                    if (retryCount < 3) {
+                        console.warn("Retrying fetchNextChunk... (Attempt " + (retryCount + 1) + "/3)");
+                        setTimeout(function () {
+                            isFetching = false;
+                            fetchNextChunk(id, retryCount + 1);
+                        }, 2000);
+                    } else {
+                        isFetching = false;
+                    }
+                })
+                .proxyVideoBytes(id, start, end, currentQuality, token);
         }
 
         function checkBuffer(player, id) {
@@ -2080,16 +2416,45 @@
             var isPaused = player.paused;
             var videoId = lastParams.id;
 
+            // メタデータロード完了後に、バッファがシーク先に追いつくのを待ってから再生位置を復元
+            var onMetadataLoaded = function () {
+                var checkBufferAndSeek = function () {
+                    var buffered = player.buffered;
+                    var hasData = false;
+                    for (var i = 0; i < buffered.length; i++) {
+                        if (buffered.start(i) <= currentTime && currentTime <= buffered.end(i)) {
+                            hasData = true;
+                            break;
+                        }
+                    }
+
+                    if (hasData || (buffered.length > 0 && buffered.end(buffered.length - 1) >= player.duration)) {
+                        setTimeout(function () {
+                            try {
+                                player.currentTime = currentTime;
+                                if (!isPaused) {
+                                    player.play().catch(function () { });
+                                }
+                            } catch (e) {
+                                console.error("Failed to restore currentTime:", e);
+                            }
+                        }, 100);
+                        player.removeEventListener('progress', checkBufferAndSeek);
+                    }
+                };
+
+                player.addEventListener('progress', checkBufferAndSeek);
+                checkBufferAndSeek();
+                player.removeEventListener('loadedmetadata', onMetadataLoaded);
+            };
+            player.addEventListener('loadedmetadata', onMetadataLoaded);
+
             if (typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined') {
                 initMSEPlayer(player, videoId);
             } else {
-                player.src = '{{TUNNEL_URL}}/stream?id=' + videoId + '&quality=' + newQuality;
+                player.src = '{{TUNNEL_URL}}/stream?id=' + videoId + '&quality=' + newQuality + '&token=' + encodeURIComponent(token);
             }
             player.load();
-            player.currentTime = currentTime;
-            if (!isPaused) {
-                player.play().catch(function () { });
-            }
         }
 
         function updateFavoriteButton(isFavorite) {
@@ -2194,6 +2559,36 @@
                     '<button class="btn" onclick="triggerRestart()" style="width:160px; height:40px; background:var(--yt-red); color:#fff; margin-top:0;">\u518d\u8d77\u52d5\u3092\u5b9f\u884c</button>' +
                     '</div>' +
 
+                    '<h3>操作ログ (operations.jsonl)</h3>' +
+                    '<div class="admin-card">' +
+                    '  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom:16px;">' +
+                    '    <div style="display:flex; gap:12px; flex-wrap:wrap; flex:1;">' +
+                    '      <input type="text" id="op-filter-user" placeholder="ユーザー名絞り込み" style="background:#333; border:1px solid #444; color:#fff; padding:8px 12px; border-radius:6px; font-size:13px; outline:none; width:150px;" oninput="applyOpFilters()">' +
+                    '      <input type="text" id="op-filter-action" placeholder="操作名絞り込み" style="background:#333; border:1px solid #444; color:#fff; padding:8px 12px; border-radius:6px; font-size:13px; outline:none; width:150px;" oninput="applyOpFilters()">' +
+                    '      <input type="text" id="op-filter-keyword" placeholder="詳細・キーワード絞り込み" style="background:#333; border:1px solid #444; color:#fff; padding:8px 12px; border-radius:6px; font-size:13px; outline:none; width:200px;" oninput="applyOpFilters()">' +
+                    '    </div>' +
+                    '    <button class="btn" onclick="loadOperationLogs()" style="width:160px; height:40px; margin-top:0;">操作ログを読み込む</button>' +
+                    '  </div>' +
+                    '  <div id="op-logs-wrapper" class="admin-table-wrapper" style="display:none; max-height:450px; overflow-y:auto; margin-bottom:0; border: 1px solid #333;">' +
+                    '    <table class="admin-table">' +
+                    '      <thead style="position:sticky; top:0; z-index:1;">' +
+                    '        <tr>' +
+                    '          <th>時刻</th>' +
+                    '          <th>ユーザー</th>' +
+                    '          <th>権限</th>' +
+                    '          <th>操作</th>' +
+                    '          <th>対象 / 詳細</th>' +
+                    '          <th style="text-align:center;">ステータス</th>' +
+                    '          <th>IP</th>' +
+                    '          <th style="text-align:right;">所要時間</th>' +
+                    '        </tr>' +
+                    '      </thead>' +
+                    '      <tbody id="op-logs-tbody"></tbody>' +
+                    '    </table>' +
+                    '  </div>' +
+                    '  <div id="op-logs-empty" style="color:#aaa; text-align:center; padding:32px 0; font-size:14px;">ログが読み込まれていないか、データがありません。</div>' +
+                    '</div>' +
+
                     '<h3>\u30b5\u30fc\u30d0\u30fc\u30ed\u30b0 (tunnel.log)</h3>' +
                     '<div class="admin-card">' +
                     '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">' +
@@ -2228,6 +2623,112 @@
             }).catch(function (e) {
                 pre.textContent = 'Error: ' + (e.message || 'Failed to load history');
             });
+        }
+
+        var allOperationLogs = [];
+
+        function loadOperationLogs() {
+            var wrapper = document.getElementById('op-logs-wrapper');
+            var empty = document.getElementById('op-logs-empty');
+            var tbody = document.getElementById('op-logs-tbody');
+            if (!wrapper || !empty || !tbody) return;
+
+            empty.textContent = '読み込み中...';
+            empty.style.display = 'block';
+            wrapper.style.display = 'none';
+
+            api('/api/admin/operation-logs').then(function (data) {
+                allOperationLogs = data || [];
+                applyOpFilters();
+            }).catch(function (e) {
+                empty.textContent = 'エラー: ' + (e.message || 'ログの読み込みに失敗しました');
+                empty.style.display = 'block';
+                wrapper.style.display = 'none';
+            });
+        }
+
+        function applyOpFilters() {
+            var userFilter = (document.getElementById('op-filter-user').value || '').toLowerCase().trim();
+            var actionFilter = (document.getElementById('op-filter-action').value || '').toLowerCase().trim();
+            var keywordFilter = (document.getElementById('op-filter-keyword').value || '').toLowerCase().trim();
+
+            var filtered = allOperationLogs.filter(function (log) {
+                if (userFilter && (log.username || '').toLowerCase().indexOf(userFilter) === -1) {
+                    return false;
+                }
+                if (actionFilter && (log.action || '').toLowerCase().indexOf(actionFilter) === -1) {
+                    return false;
+                }
+                if (keywordFilter) {
+                    var inDetails = (log.details || '').toLowerCase().indexOf(keywordFilter) !== -1;
+                    var inPath = (log.path || '').toLowerCase().indexOf(keywordFilter) !== -1;
+                    var inIp = (log.ip || '').toLowerCase().indexOf(keywordFilter) !== -1;
+                    var inTime = (log.time || '').toLowerCase().indexOf(keywordFilter) !== -1;
+                    if (!inDetails && !inPath && !inIp && !inTime) {
+                        return false;
+                    }
+                }
+                return true;
+            });
+
+            renderOperationLogs(filtered);
+        }
+
+        function renderOperationLogs(logs) {
+            var wrapper = document.getElementById('op-logs-wrapper');
+            var empty = document.getElementById('op-logs-empty');
+            var tbody = document.getElementById('op-logs-tbody');
+            if (!wrapper || !empty || !tbody) return;
+
+            if (logs.length === 0) {
+                empty.textContent = '該当するログが見つかりませんでした。';
+                empty.style.display = 'block';
+                wrapper.style.display = 'none';
+                return;
+            }
+
+            empty.style.display = 'none';
+            wrapper.style.display = 'block';
+
+            var html = '';
+            logs.forEach(function (log) {
+                // ステータスコードに応じた色付きバッジ
+                var statusColor = '#28a745'; // 緑
+                if (log.status >= 400) {
+                    statusColor = '#dc3545'; // 赤
+                } else if (log.status >= 300) {
+                    statusColor = '#ffc107'; // 黄
+                }
+                var statusBadge = '<span style="background:' + statusColor + '; color:#fff; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:bold; display:inline-block;">' + log.status + '</span>';
+
+                // ロールの色分け
+                var roleColor = '#aaa';
+                if (log.role === 'admin') {
+                    roleColor = 'var(--yt-accent, #ff4e4e)';
+                } else if (log.role === 'user') {
+                    roleColor = '#00adb5';
+                }
+                var roleBadge = '<span style="color:' + roleColor + '; font-weight:600;">' + log.role + '</span>';
+
+                // Detailsのエスケープとトリム
+                var detailsText = log.details || '-';
+                if (detailsText.length > 80) {
+                    detailsText = detailsText.substring(0, 80) + '...';
+                }
+
+                html += '<tr>' +
+                    '<td style="color:#aaa; font-family:monospace;">' + h(log.time) + '</td>' +
+                    '<td style="font-weight:600;">' + h(log.username) + '</td>' +
+                    '<td>' + roleBadge + '</td>' +
+                    '<td style="color:#fff; font-weight:600;">' + h(log.action) + '</td>' +
+                    '<td style="color:#ccc; font-size:12px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + h(log.details || '') + '">' + h(detailsText) + '</td>' +
+                    '<td style="text-align:center;">' + statusBadge + '</td>' +
+                    '<td style="font-family:monospace; font-size:12px; color:#aaa;">' + h(log.ip) + '</td>' +
+                    '<td style="text-align:right; font-family:monospace; color:#888;">' + log.duration + ' ms</td>' +
+                    '</tr>';
+            });
+
+            tbody.innerHTML = html;
         }
 
         function previewServerLogs() {
@@ -2475,7 +2976,20 @@
             });
         }
 
-        window.onload = checkAuth;
+        window.onload = function () {
+            checkAuth();
+            var cancelBtn = document.getElementById('confirm-modal-cancel');
+            var okBtn = document.getElementById('confirm-modal-ok');
+            if (cancelBtn) cancelBtn.addEventListener('click', hideConfirmModal);
+            if (okBtn) {
+                okBtn.addEventListener('click', function () {
+                    if (activeConfirmCallback) {
+                        activeConfirmCallback();
+                    }
+                    hideConfirmModal();
+                });
+            }
+        };
         document.getElementById('global-q').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') performSearch();
         });
