@@ -2092,6 +2092,7 @@
                 var retryCount = 0;
                 var maxRetries = 3;
                 var waitingTimer = null;
+                var _userPaused = false; // ユーザーが意図的に一時停止したかどうか
 
                 player.addEventListener('timeupdate', function () {
                     if (player.currentTime > 0) {
@@ -2099,8 +2100,24 @@
                     }
                 });
 
+                // ユーザーが意図的に一時停止したとき: タイマーをキャンセルして回復しない
+                player.addEventListener('pause', function () {
+                    _userPaused = true;
+                    if (waitingTimer) {
+                        clearTimeout(waitingTimer);
+                        waitingTimer = null;
+                    }
+                });
+
+                // 再生開始時: フラグをリセット。バッファリング中は waiting が発火するが、
+                // _userPaused=false になる前に waiting タイマーが走るのを防ぐため小さな遅延を入れる
+                player.addEventListener('play', function () {
+                    setTimeout(function () { _userPaused = false; }, 200);
+                });
+
                 player.addEventListener('playing', function () {
                     retryCount = 0;
+                    _userPaused = false;
                     if (waitingTimer) {
                         clearTimeout(waitingTimer);
                         waitingTimer = null;
@@ -2108,6 +2125,11 @@
                 });
 
                 function triggerRecovery(reason) {
+                    // pause 中またはユーザーが意図的に一時停止中は回復しない
+                    if (player.paused || player.ended || _userPaused) {
+                        console.log('[Recovery] Skipped: player is paused/ended or user-paused. reason=' + reason);
+                        return;
+                    }
                     if (isMse) {
                         if (retryCount < maxRetries) {
                             retryCount++;
@@ -2145,17 +2167,22 @@
                 }
 
                 player.addEventListener('error', function (e) {
+                    // ユーザーが意図的に pause 中のエラーは無視
+                    if (_userPaused || player.paused) return;
                     console.error("Player error event fired:", player.error);
                     triggerRecovery("Error");
                 });
 
                 player.addEventListener('waiting', function () {
+                    // ユーザーが pause 中はタイマー不要
+                    if (_userPaused) return;
                     if (waitingTimer) clearTimeout(waitingTimer);
+                    // 15秒待機: pause→resume後のバッファリングやネットワーク遅延を考慮した長めのタイムアウト
                     waitingTimer = setTimeout(function () {
-                        if (player.paused || player.ended) return;
+                        if (player.paused || player.ended || _userPaused) return;
                         console.warn("Video stalled (waiting event timeout). Triggering recovery...");
                         triggerRecovery("Stalled");
-                    }, 8000);
+                    }, 15000);
                 });
             }
 
@@ -2348,10 +2375,13 @@
         }
 
         function checkBuffer(player, id) {
+            // 一時停止中はフェッチしない（MSEバッファが渋滞するのを防ぐ）
+            if (player.paused || player.ended) return;
             if (isFetching || !currentSourceBuffer || currentSourceBuffer.updating || currentMediaSource.readyState !== 'open') return;
             var buffered = player.buffered;
             var endInSec = 0;
             if (buffered.length > 0) endInSec = buffered.end(buffered.length - 1);
+            // 先読みバッファが60秒未満のときのみ次のチャンクを取得
             if (endInSec - player.currentTime < 60) fetchNextChunk(id);
         }
 

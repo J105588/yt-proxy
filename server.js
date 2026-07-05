@@ -2066,13 +2066,48 @@ app.get('/stream', async (req, res) => {
             return res.download(tmpPath, `${sanitizedTitle}_${quality}.mp4`);
         }
 
-        const sendOptions = {
-            headers: {
+        // トランスコード中のファイルに対して Range Request を手動処理する。
+        // res.sendFile はファイル完成時のサイズを Content-Length として返すため、
+        // まだ書き込み途中のファイルでは pause→resume 後のシーク時に
+        // 「既に送信済み」と判断してデータが届かなくなるバグを防ぐ。
+        const fileSize = getFileSize(tmpPath);
+        const rangeHeader = req.headers['range'];
+
+        if (rangeHeader) {
+            const parts = rangeHeader.replace(/bytes=/, '').split('-');
+            const rangeStart = parseInt(parts[0], 10);
+            const rangeEnd = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+            const chunkSize = rangeEnd - rangeStart + 1;
+
+            if (rangeStart >= fileSize) {
+                // リクエストされた範囲がまだ書き込まれていない場合は 416 を返す
+                res.status(416).set({
+                    'Content-Range': `bytes */${fileSize}`,
+                    'Accept-Ranges': 'bytes'
+                }).end();
+                return;
+            }
+
+            res.status(206).set({
+                'Content-Range': `bytes ${rangeStart}-${rangeEnd}/${fileSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunkSize,
+                'Content-Type': 'video/mp4'
+            });
+            const readStream = fs.createReadStream(tmpPath, { start: rangeStart, end: rangeEnd });
+            readStream.pipe(res);
+            req.on('close', () => readStream.destroy());
+        } else {
+            // Range ヘッダーなし: ファイル全体を送信（ブラウザが最初に取得するとき）
+            res.set({
+                'Content-Length': fileSize,
                 'Content-Type': 'video/mp4',
                 'Accept-Ranges': 'bytes'
-            }
-        };
-        return res.sendFile(tmpPath, sendOptions);
+            });
+            const readStream = fs.createReadStream(tmpPath);
+            readStream.pipe(res);
+            req.on('close', () => readStream.destroy());
+        }
     } catch (e) {
         console.error('Stream Proxy Error:', e.message);
         if (!res.headersSent) {
