@@ -1052,10 +1052,57 @@
                 width: 100%;
             }
         }
+
+        /* ===== Offline Banner ===== */
+        #offline-banner {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 99999;
+            background: linear-gradient(90deg, #1a0a00, #3d1a00, #1a0a00);
+            background-size: 200% 100%;
+            animation: banner-shimmer 2.5s infinite linear;
+            border-bottom: 1px solid rgba(251, 146, 60, 0.4);
+            color: #fbbf24;
+            padding: 10px 20px;
+            text-align: center;
+            font-size: 13px;
+            font-weight: 500;
+            letter-spacing: 0.02em;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+            cursor: pointer;
+        }
+        #offline-banner.visible {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        #offline-banner .offline-spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(251,191,36,0.3);
+            border-top-color: #fbbf24;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            flex-shrink: 0;
+        }
+        @keyframes banner-shimmer {
+            0%   { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
     </style>
 </head>
 
 <body>
+
+    <!-- Offline Banner -->
+    <div id="offline-banner" onclick="offlineReconnectNow()" title="クリックで今すぐ再接続">
+        <div class="offline-spinner"></div>
+        <span id="offline-banner-text">サーバーに接続できません。再接続を試みています...</span>
+    </div>
 
     <!-- Confirm Modal for Long Downloads -->
     <div id="confirm-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.75); backdrop-filter:blur(8px); z-index:9999; justify-content:center; align-items:center; opacity:0; transition:opacity 0.3s ease;">
@@ -1289,6 +1336,78 @@
         var token = localStorage.getItem('token');
         var adminSavedToken = null; // 管理者のセッション退避用
 
+        // ===== Offline Detection =====
+        var _isOffline = false;
+        var _offlineTimer = null;
+        var _offlineRetryCount = 0;
+        var _offlineRetryDelay = 5000; // 最初は5秒、最大60秒まで指数バックオフ
+
+        function showOfflineBanner(msg) {
+            var banner = document.getElementById('offline-banner');
+            var text = document.getElementById('offline-banner-text');
+            if (!banner) return;
+            if (msg && text) text.textContent = msg;
+            banner.classList.add('visible');
+        }
+
+        function hideOfflineBanner() {
+            var banner = document.getElementById('offline-banner');
+            if (banner) banner.classList.remove('visible');
+        }
+
+        function scheduleOfflineRetry() {
+            if (_offlineTimer) clearTimeout(_offlineTimer);
+            _offlineRetryCount++;
+            var delay = Math.min(_offlineRetryDelay * Math.pow(1.5, _offlineRetryCount - 1), 60000);
+            var sec = Math.round(delay / 1000);
+            showOfflineBanner('サーバーに接続できません。' + sec + '秒後に再接続します... (クリックで今すぐ)');
+            _offlineTimer = setTimeout(function () {
+                offlineReconnectNow();
+            }, delay);
+        }
+
+        function offlineReconnectNow() {
+            if (_offlineTimer) { clearTimeout(_offlineTimer); _offlineTimer = null; }
+            showOfflineBanner('再接続を試みています...');
+            fetch('/health').then(function (r) {
+                if (r.ok) {
+                    _isOffline = false;
+                    _offlineRetryCount = 0;
+                    hideOfflineBanner();
+                    showToast('サーバーに再接続しました！', 'success');
+                    // checkAuth を再実行してセッションを確認
+                    checkAuth();
+                } else {
+                    scheduleOfflineRetry();
+                }
+            }).catch(function () {
+                scheduleOfflineRetry();
+            });
+        }
+
+        function handleApiNetworkError(err) {
+            // TypeError: Failed to fetch / NetworkError などの接続エラーのみ対象
+            if (err && (err.name === 'TypeError' || err.message === 'Failed to fetch' || err.message === 'Network request failed' || !navigator.onLine)) {
+                if (!_isOffline) {
+                    _isOffline = true;
+                    _offlineRetryCount = 0;
+                    scheduleOfflineRetry();
+                }
+            }
+        }
+
+        // ブラウザのオンライン/オフラインイベントも監視
+        window.addEventListener('online', function () {
+            if (_isOffline) offlineReconnectNow();
+        });
+        window.addEventListener('offline', function () {
+            if (!_isOffline) {
+                _isOffline = true;
+                _offlineRetryCount = 0;
+                scheduleOfflineRetry();
+            }
+        });
+
         var currentView = 'home';
         var scrollPositions = {};
         var lastParams = {};
@@ -1390,7 +1509,10 @@
                                 resolve(res);
                             } catch (e) { resolve(resStr); }
                         })
-                        .withFailureHandler(reject)
+                        .withFailureHandler(function(err) {
+                            handleApiNetworkError(err);
+                            reject(err);
+                        })
                         .proxyFetch(path, params);
                 });
             } else {
@@ -1400,6 +1522,13 @@
                     headers['Authorization'] = 'Bearer ' + token;
                 }
                 return fetch(path + (query ? '?' + query : ''), { headers: headers }).then(function (res) {
+                    // 正常に応答が来たらオフライン状態を解除
+                    if (_isOffline) {
+                        _isOffline = false;
+                        _offlineRetryCount = 0;
+                        if (_offlineTimer) { clearTimeout(_offlineTimer); _offlineTimer = null; }
+                        hideOfflineBanner();
+                    }
                     if (res.status === 401) { showLoginModal(); throw new Error('Unauthorized'); }
                     return res.text().then(function (text) {
                         try {
@@ -1411,6 +1540,9 @@
                             return text;
                         }
                     });
+                }).catch(function (err) {
+                    handleApiNetworkError(err);
+                    throw err;
                 });
             }
         }

@@ -417,6 +417,25 @@ function getNicoStreamInfo(id) {
     }
 }
 
+async function getNicoStreamInfoAsync(id) {
+    const args = ['--no-cache-dir', '--dump-json', `https://www.nicovideo.jp/watch/${id}`];
+    const cached = fetchCache(args);
+    if (cached) {
+        try { return JSON.parse(cached); } catch (e) { }
+    }
+
+    try {
+        const out = await runYtDlpAsync(args, 20000);
+        if (!out) return null;
+        const info = JSON.parse(out);
+        setCache(args, out);
+        return info;
+    } catch (e) {
+        console.error('getNicoStreamInfoAsync error:', e.message);
+        return null;
+    }
+}
+
 // --- 認証API ---
 
 app.get('/api/signup', auth, async (req, res) => {
@@ -1635,7 +1654,7 @@ async function ensureConversion(id, quality) {
         
         let ffmpeg;
         if (isNico) {
-            const info = getNicoStreamInfo(id);
+            const info = await getNicoStreamInfoAsync(id);
             if (!info) throw new Error("Could not fetch Niconico stream info");
 
             const formats = info.formats || [];
@@ -1681,12 +1700,12 @@ async function ensureConversion(id, quality) {
                 formatStr = 'bestvideo[height<=360]+bestaudio/best[height<=360]/best';
             }
 
-            const directUrl = runYtDlp([
+            const directUrl = (await runYtDlpAsync([
                 '-g', `https://www.youtube.com/watch?v=${id}`,
                 '-f', formatStr,
                 '--no-warnings',
                 '--no-playlist'
-            ], 25000).trim();
+            ], 25000)).trim();
 
             if (!directUrl) throw new Error("directUrl is empty");
 
@@ -1902,12 +1921,12 @@ app.get('/stream-part', async (req, res) => {
     }
 
     try {
-        const directUrl = runYtDlp([
+        const directUrl = (await runYtDlpAsync([
             '-g', `https://www.youtube.com/watch?v=${id}`,
             '-f', 'best[height<=720][ext=mp4]/best[height<=720]/best',
             '--no-warnings',
             '--no-playlist'
-        ], 25000).trim();
+        ], 25000)).trim();
 
         if (!directUrl) throw new Error("Could not get direct URL");
 
@@ -1957,18 +1976,18 @@ app.get('/stream', async (req, res) => {
         // 1. ライブ配信URLの解決および判定
         if (isNicoLive) {
             console.log(`[Stream] Resolving Niconico Live URL: ${id}`);
-            directUrl = runYtDlp([
+            directUrl = (await runYtDlpAsync([
                 '-g', `https://live.nicovideo.jp/watch/${id}`,
                 '--no-warnings'
-            ], 15000).trim();
+            ], 15000)).trim();
         } else if (!isNico) {
             // YouTubeライブ判定のためURLを取得 (通常動画なら18番などを優先してm3u8化を防ぐ)
-            directUrl = runYtDlp([
+            directUrl = (await runYtDlpAsync([
                 '-g', `https://www.youtube.com/watch?v=${id}`,
                 '-f', '18/best',
                 '--no-warnings',
                 '--no-playlist'
-            ], 25000).trim();
+            ], 25000)).trim();
 
             if (directUrl.includes('manifest/hls_live_itags') || directUrl.includes('live=1')) {
                 isLive = true;
@@ -2589,11 +2608,20 @@ app.get('/api/resolve-url', auth, async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
+// ヘルスチェックエンドポイント (start.bat の監視ループが HTTP 応答を確認するために使用)
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime(), timestamp: Date.now() });
+});
+
+const server = app.listen(PORT, () => {
     console.log(`=========================================`);
     console.log(`  YT Proxy Server is now READY`);
     console.log(`  Local URL: http://localhost:${PORT}`);
     console.log(`=========================================`);
+});
+server.on('error', (err) => {
+    console.error('[System] Server listen error:', err.message);
+    process.exit(1);
 });
 
 // プロセスクラッシュや終了時のゾンビ一掃制御 (SIGTERM, SIGINT, Exception等)
@@ -2613,7 +2641,13 @@ process.on('SIGTERM', () => {
 process.on('uncaughtException', (err) => {
     console.error('[System] Uncaught Exception:', err.message || err);
     if (err.stack) console.error(err.stack);
+    // 壊れた状態で動き続けないよう終了し、start.bat の再起動ループに委ねる
+    killAllConversions();
+    process.exit(1);
 });
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[System] Unhandled Rejection at:', promise, 'reason:', reason);
+    // Promise の拒否もクラッシュ扱いとして終了し、自動再起動に委ねる
+    killAllConversions();
+    process.exit(1);
 });

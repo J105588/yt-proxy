@@ -114,7 +114,7 @@ set SEC_COUNT=0
 if exist stop.trigger goto do_stop
 powershell -NoProfile -Command "Start-Sleep -Seconds 5"
 set /a SEC_COUNT+=5
-if !SEC_COUNT! lss 60 goto monitor_wait
+if !SEC_COUNT! lss 30 goto monitor_wait
 
 set /a MONITOR_TICKS+=1
 
@@ -128,6 +128,13 @@ rem Check server (Monitor port 3000)
 netstat -ano | findstr LISTENING | findstr :3000 > nul
 if errorlevel 1 (
     echo [!] Server port 3000 offline detected. Restarting...
+    goto main_loop
+)
+
+rem HTTP health check - catches freezes where port is open but server is unresponsive
+powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:3000/health' -TimeoutSec 10 -UseBasicParsing; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
+if errorlevel 1 (
+    echo [!] Health check HTTP failed ^(server frozen?^). Restarting...
     goto main_loop
 )
 
