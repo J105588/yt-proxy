@@ -10,6 +10,18 @@ echo ========================================
 
 if exist stopped.flag del /f /q stopped.flag >nul 2>&1
 
+if exist .env (
+    for /f "usebackq tokens=*" %%i in (".env") do (
+        set "line=%%i"
+        if not "!line:~0,1!"=="#" (
+            for /f "tokens=1* delims==" %%a in ("%%i") do (
+                set "%%a=%%b"
+            )
+        )
+    )
+)
+if not defined PORT set PORT=3000
+
 echo [1/2] Sending stop signal to maintenance loop...
 echo. > stop.trigger
 
@@ -29,7 +41,7 @@ if !WAIT_COUNT! gtr 10 (
     taskkill /f /fi "windowtitle eq YT-Proxy-Server*" >nul 2>&1
     taskkill /f /im cloudflared.exe >nul 2>&1
     taskkill /f /im ffmpeg.exe >nul 2>&1
-    for /f "tokens=5" %%a in ('netstat -aon ^| findstr LISTENING ^| findstr :3000') do taskkill /f /pid %%a >nul 2>&1
+    for /f "tokens=5" %%a in ('netstat -aon ^| findstr LISTENING ^| findstr /c:":!PORT! "') do taskkill /f /pid %%a >nul 2>&1
     if exist stop.trigger del /f /q stop.trigger >nul 2>&1
     goto stop_done
 )

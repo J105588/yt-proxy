@@ -19,6 +19,7 @@ for /f "usebackq tokens=*" %%i in (".env") do (
         )
     )
 )
+if not defined PORT set PORT=3000
 set KEY=%GAS_KEY%
 
 if exist stop.trigger del /f /q stop.trigger >nul 2>&1
@@ -33,8 +34,8 @@ echo   * Press Ctrl+C to stop or run "stop.bat"
 echo ======================================================
 
 echo [1/5] Cleaning up old processes...
-rem Kill processes holding port 3000
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr LISTENING ^| findstr :3000') do taskkill /f /pid %%a >nul 2>&1
+rem Kill processes holding port !PORT!
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr LISTENING ^| findstr /c:":!PORT! "') do taskkill /f /pid %%a >nul 2>&1
 
 taskkill /f /fi "windowtitle eq YT-Proxy-Server*" >nul 2>&1
 taskkill /f /fi "windowtitle eq YT-Proxy-Tunnel*" >nul 2>&1
@@ -50,7 +51,7 @@ if exist temp_url.txt del /f /q temp_url.txt >nul 2>&1
 echo [2/5] Starting server and tunnel...
 start /min "YT-Proxy-Server" node server.js
 powershell -NoProfile -Command "Start-Sleep -Seconds 2"
-start /b "" .\cloudflared.exe tunnel --url http://localhost:3000 > tunnel.log 2>&1
+start /b "" .\cloudflared.exe tunnel --url http://localhost:!PORT! > tunnel.log 2>&1
 
 echo [3/5] Waiting for URL (max 60s)...
 
@@ -124,15 +125,15 @@ if !MONITOR_TICKS! gtr 240 (
     goto main_loop
 )
 
-rem Check server (Monitor port 3000)
-netstat -ano | findstr LISTENING | findstr :3000 > nul
+rem Check server (Monitor port !PORT!)
+netstat -ano | findstr LISTENING | findstr /c:":!PORT! " > nul
 if errorlevel 1 (
-    echo [!] Server port 3000 offline detected. Restarting...
+    echo [!] Server port !PORT! offline detected. Restarting...
     goto main_loop
 )
 
 rem HTTP health check - catches freezes where port is open but server is unresponsive
-powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:3000/health' -TimeoutSec 10 -UseBasicParsing; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
+powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:!PORT!/health' -TimeoutSec 10 -UseBasicParsing; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
 if errorlevel 1 (
     echo [!] Health check HTTP failed ^(server frozen?^). Restarting...
     goto main_loop
@@ -152,7 +153,7 @@ echo [!] Stop signal detected. Cleaning up...
 taskkill /f /fi "windowtitle eq YT-Proxy-Server*" >nul 2>&1
 taskkill /f /im cloudflared.exe >nul 2>&1
 taskkill /f /im ffmpeg.exe >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr LISTENING ^| findstr :3000') do taskkill /f /pid %%a >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr LISTENING ^| findstr /c:":!PORT! "') do taskkill /f /pid %%a >nul 2>&1
 if exist tunnel.log del /f /q tunnel.log >nul 2>&1
 if exist temp_url.txt del /f /q temp_url.txt >nul 2>&1
 del /f /q stop.trigger >nul 2>&1

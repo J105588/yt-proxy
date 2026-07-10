@@ -1264,6 +1264,14 @@
     <script>
         var activeConfirmCallback = null;
 
+        function getTunnelUrl() {
+            var u = '{{TUNNEL_URL}}';
+            if (!u || u.indexOf('{{') !== -1) {
+                return window.location.origin;
+            }
+            return u;
+        }
+
         function showConfirmModal(title, message, onConfirm) {
             var overlay = document.getElementById('confirm-modal-overlay');
             var titleEl = document.getElementById('confirm-modal-title');
@@ -1415,10 +1423,11 @@
         var currentSourceBuffer = null;
         var currentByte = 0;
         var isFetching = false;
-        var CHUNK_SIZE = 1 * 1024 * 1024;
+        var currentVideoDuration = 0;
+        var CHUNK_SIZE = Math.floor(1.5 * 1024 * 1024); // 1.5MB
         var apiCache = new Map();
         var navStack = []; // Internal navigation stack for back button
-        var currentQuality = localStorage.getItem('preferred_quality') || '480p';
+        var currentQuality = '720p';
         var bufferInterval = null;
 
         function h(s) { return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/`/g, '&#96;') : ''; }
@@ -1995,7 +2004,7 @@
                     var rId = j(rv.id);
                     var rIsNico = isNicoId(rv.id);
                     var rThumb = rIsNico ? (rv.thumbnail || '') : ('https://i.ytimg.com/vi/' + rId + '/mqdefault.jpg');
-                    return '<div style="display:flex; gap:8px; margin-bottom:12px; cursor:pointer;" onclick="nav(\'video\',\'' + rId + '\')">' +
+                    return '<div class="video-card related-card" style="display:flex; gap:8px; margin-bottom:12px; cursor:pointer;" onclick="nav(\'video\',\'' + rId + '\')">' +
                         '<div style="width:168px; height:94px; border-radius:8px; overflow:hidden; background:#222; flex-shrink:0;"><img data-url="' + h(rThumb) + '" style="width:100%;height:100%;object-fit:cover;" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="></div>' +
                         '<div style="flex:1; overflow:hidden;">' +
                         '<div style="font-size:14px; font-weight:500; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.2;">' + h(rv.title || '\u7121\u984c') + '</div>' +
@@ -2009,6 +2018,7 @@
             var commentCount = res.comments ? res.comments.length : 0;
             var isNico = info.isNico || isNicoId(id);
             var posterUrl = isNico ? (info.thumbnail || '') : ('https://i.ytimg.com/vi/' + j(id) + '/maxresdefault.jpg');
+            currentVideoDuration = Number(info.duration || 0);
 
             content.innerHTML =
                 '<div style="margin-bottom:16px; display:flex; align-items:center; height:48px;">' + backBtnHtml + '</div>' +
@@ -2025,7 +2035,7 @@
                 '<div style="font-size:12px; color:#aaa;">' + (info.view_count || 0).toLocaleString() + ' \u56de\u8996\u8074</div>' +
                 '</div>' +
                 '<select id="quality-select" style="background:#272727; color:#fff; border:1px solid #444; padding:6px 12px; border-radius:18px; font-weight:600; cursor:pointer; outline:none;' + (isNico ? 'display:none;' : '') + '">' +
-                (currentUser && currentUser.role === 'admin' ? '<option value="1080p">1080p</option>' : '') +
+                '<option value="1080p">1080p</option>' +
                 '<option value="720p">720p</option>' +
                 '<option value="480p">480p</option>' +
                 '<option value="360p">360p</option>' +
@@ -2075,10 +2085,24 @@
 
             if (player) {
                 player.addEventListener('ended', function () {
-                    console.log("Video playback ended.");
+                    console.log("Video playback ended event fired. currentTime:", player.currentTime, "duration:", currentVideoDuration);
+                    if (player.seeking || (currentVideoDuration > 0 && (currentVideoDuration - player.currentTime) > 3)) {
+                        console.warn("Premature ended event triggered mid-stream (seeking outside buffer or underrun). Preventing autoplay to next video!");
+                        if (!player.seeking) {
+                            if (typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined') {
+                                fetchNextChunk(id, 0);
+                            } else {
+                                var curTime = player.currentTime;
+                                player.load();
+                                player.currentTime = curTime;
+                                player.play().catch(function(){});
+                            }
+                        }
+                        return;
+                    }
                     var isAutoplay = localStorage.getItem('autoplay_enabled') === 'true';
                     if (isAutoplay) {
-                        var firstRelated = document.querySelector('.related-area .video-card');
+                        var firstRelated = document.querySelector('.related-area .video-card, .related-area [onclick*="nav(\'video\'"]');
                         if (firstRelated) {
                             console.log("Autoplay: Clicking next video card.");
                             firstRelated.click();
@@ -2187,9 +2211,10 @@
             }
 
             if (typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined') {
-                initMSEPlayer(player, id);
+                initMSEPlayer(player, id, 0, currentVideoDuration);
             } else {
-                player.src = '{{TUNNEL_URL}}/stream?id=' + id + '&quality=' + currentQuality + '&token=' + encodeURIComponent(token);
+                player.src = getTunnelUrl() + '/stream?id=' + id + '&quality=' + currentQuality + '&duration=' + currentVideoDuration + '&token=' + encodeURIComponent(token);
+                player.play().catch(function(e) { console.warn("Autoplay required user click:", e); });
             }
 
             var qSel = document.getElementById('quality-select');
@@ -2218,10 +2243,7 @@
                             var isGas = true;
                             if (baseUrl.indexOf('{{') === 0) {
                                 isGas = false;
-                                baseUrl = '{{TUNNEL_URL}}';
-                                if (baseUrl.indexOf('{{') === 0) {
-                                    baseUrl = window.location.origin;
-                                }
+                                baseUrl = getTunnelUrl();
                             }
 
                             showToast('ダウンロードを開始しました。バックグラウンドで処理中です...', 'info');
@@ -2293,7 +2315,7 @@
         }
 
         // ===== MSE Streaming =====
-        function initMSEPlayer(player, id) {
+        function initMSEPlayer(player, id, initialTime, duration) {
             if (bufferInterval) {
                 clearInterval(bufferInterval);
                 bufferInterval = null;
@@ -2305,14 +2327,42 @@
             currentMediaSource.addEventListener('sourceopen', function () {
                 try {
                     currentSourceBuffer = currentMediaSource.addSourceBuffer('video/mp4; codecs="avc1.42E01E, mp4a.40.2"');
-                    currentSourceBuffer.addEventListener('updateend', function () { isFetching = false; checkBuffer(player, id); });
+                    if (duration && !isNaN(duration) && duration > 0) {
+                        try { currentMediaSource.duration = Number(duration); } catch (e) {}
+                    }
+                    currentSourceBuffer.addEventListener('updateend', function () {
+                        if (duration && !isNaN(duration) && duration > 0 && isNaN(currentMediaSource.duration)) {
+                            try { currentMediaSource.duration = Number(duration); } catch (e) {}
+                        }
+                        isFetching = false;
+                        checkBuffer(player, id, duration);
+                    });
+                    if (initialTime > 0 && player) {
+                        player.currentTime = initialTime;
+                    }
                     fetchNextChunk(id);
                 } catch (e) { console.error("MSE Init Error:", e); }
             });
-            // 3秒おきにバッファ状態をチェックし、ロードが途切れるのを防ぐ
+            if (player) {
+                player.addEventListener('seeking', function onMseSeek() {
+                    if (!currentMediaSource || currentMediaSource.readyState !== 'open') return;
+                    var targetSec = player.currentTime;
+                    var buffered = player.buffered;
+                    for (var i = 0; i < buffered.length; i++) {
+                        if (buffered.start(i) <= targetSec && targetSec <= buffered.end(i)) return;
+                    }
+                    if (duration && duration > 0) {
+                        var estTotal = Math.max(CHUNK_SIZE * 10, Math.floor(duration * (currentQuality === '1080p' ? 450000 : currentQuality === '720p' ? 250000 : currentQuality === '480p' ? 140000 : 85000)));
+                        currentByte = Math.max(0, Math.floor((targetSec / duration) * estTotal));
+                        console.log("MSE Seeking to sec: " + targetSec + ", byte: " + currentByte);
+                        if (isFetching) { isFetching = false; }
+                        fetchNextChunk(id, 0);
+                    }
+                });
+            }
             bufferInterval = setInterval(function () {
-                checkBuffer(player, id);
-            }, 3000);
+                checkBuffer(player, id, duration);
+            }, 1500);
         }
 
         function fetchNextChunk(id, retryCount) {
@@ -2327,11 +2377,18 @@
                         setTimeout(function () {
                             isFetching = false;
                             fetchNextChunk(id, 0);
-                        }, 2000);
+                        }, 1000);
                         return;
                     }
                     if (!base64 || base64.length < 10) {
                         isFetching = false;
+                        var p = document.getElementById('v-player');
+                        var remSec = p ? (currentVideoDuration - p.currentTime) : 999;
+                        if (currentVideoDuration > 0 && remSec > 3) {
+                            console.log("Buffer empty mid-stream (waiting for backend conversion). Retrying in 1s without endOfStream...");
+                            setTimeout(function () { fetchNextChunk(id, 0); }, 1000);
+                            return;
+                        }
                         if (currentMediaSource && currentMediaSource.readyState === 'open') {
                             var finalizeStream = function() {
                                 if (currentSourceBuffer && !currentSourceBuffer.updating) {
@@ -2357,7 +2414,11 @@
                     var bytes = new Uint8Array(binary.length);
                     for (var k = 0; k < binary.length; k++) bytes[k] = binary.charCodeAt(k);
                     currentSourceBuffer.appendBuffer(bytes.buffer);
+                    var isFirst = (currentByte === 0);
                     currentByte += binary.length;
+                    if (isFirst && player && player.paused) {
+                        player.play().catch(function(e) { console.warn("Autoplay required user click:", e); });
+                    }
                 })
                 .withFailureHandler(function (err) {
                     console.error("fetchNextChunk failure:", err);
@@ -2374,15 +2435,17 @@
                 .proxyVideoBytes(id, start, end, currentQuality, token);
         }
 
-        function checkBuffer(player, id) {
-            // 一時停止中はフェッチしない（MSEバッファが渋滞するのを防ぐ）
-            if (player.paused || player.ended) return;
+        function checkBuffer(player, id, duration) {
+            if (player.ended) return;
+            if (duration && !isNaN(duration) && duration > 0 && currentMediaSource && isNaN(currentMediaSource.duration)) {
+                try { currentMediaSource.duration = Number(duration); } catch (e) {}
+            }
             if (isFetching || !currentSourceBuffer || currentSourceBuffer.updating || currentMediaSource.readyState !== 'open') return;
             var buffered = player.buffered;
             var endInSec = 0;
             if (buffered.length > 0) endInSec = buffered.end(buffered.length - 1);
-            // 先読みバッファが60秒未満のときのみ次のチャンクを取得
-            if (endInSec - player.currentTime < 60) fetchNextChunk(id);
+            // バッファが90秒未満のときまたは停止中でもバッファが少ない時は次のチャンクをどんどん取得して先読みする
+            if (endInSec - player.currentTime < 90) fetchNextChunk(id);
         }
 
         // ===== Channel =====
@@ -2578,43 +2641,25 @@
             var isPaused = player.paused;
             var videoId = lastParams.id;
 
-            // メタデータロード完了後に、バッファがシーク先に追いつくのを待ってから再生位置を復元
             var onMetadataLoaded = function () {
-                var checkBufferAndSeek = function () {
-                    var buffered = player.buffered;
-                    var hasData = false;
-                    for (var i = 0; i < buffered.length; i++) {
-                        if (buffered.start(i) <= currentTime && currentTime <= buffered.end(i)) {
-                            hasData = true;
-                            break;
-                        }
+                try {
+                    if (currentTime > 0 && !(typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined')) {
+                        player.currentTime = currentTime;
                     }
-
-                    if (hasData || (buffered.length > 0 && buffered.end(buffered.length - 1) >= player.duration)) {
-                        setTimeout(function () {
-                            try {
-                                player.currentTime = currentTime;
-                                if (!isPaused) {
-                                    player.play().catch(function () { });
-                                }
-                            } catch (e) {
-                                console.error("Failed to restore currentTime:", e);
-                            }
-                        }, 100);
-                        player.removeEventListener('progress', checkBufferAndSeek);
+                    if (!isPaused) {
+                        player.play().catch(function () { });
                     }
-                };
-
-                player.addEventListener('progress', checkBufferAndSeek);
-                checkBufferAndSeek();
+                } catch (e) {
+                    console.error("Failed to restore currentTime:", e);
+                }
                 player.removeEventListener('loadedmetadata', onMetadataLoaded);
             };
             player.addEventListener('loadedmetadata', onMetadataLoaded);
 
             if (typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined') {
-                initMSEPlayer(player, videoId);
+                initMSEPlayer(player, videoId, currentTime, currentVideoDuration);
             } else {
-                player.src = '{{TUNNEL_URL}}/stream?id=' + videoId + '&quality=' + newQuality + '&token=' + encodeURIComponent(token);
+                player.src = getTunnelUrl() + '/stream?id=' + videoId + '&quality=' + newQuality + '&duration=' + currentVideoDuration + '&token=' + encodeURIComponent(token);
             }
             player.load();
         }
@@ -2991,7 +3036,10 @@
             for (var i = 0; i < imgs.length; i++) {
                 (function (img) {
                     var url = img.getAttribute('data-url');
-                    if (!url) return;
+                    if (!url || !url.startsWith('http') || url.includes('/@') || url.includes('/channel/') || url.includes('/user/')) {
+                        img.removeAttribute('data-url');
+                        return;
+                    }
                     if (typeof google !== 'undefined' && google.script && google.script.run) {
                         google.script.run.withSuccessHandler(function (b64) { if (b64) img.src = 'data:image/jpeg;base64,' + b64; }).proxyBinary('/proxy-img', { url: url });
                     } else {
@@ -3004,7 +3052,10 @@
             for (var k = 0; k < vids.length; k++) {
                 (function (v) {
                     var url = v.getAttribute('data-poster');
-                    if (!url) return;
+                    if (!url || !url.startsWith('http') || url.includes('/@') || url.includes('/channel/') || url.includes('/user/')) {
+                        v.removeAttribute('data-poster');
+                        return;
+                    }
                     if (typeof google !== 'undefined' && google.script && google.script.run) {
                         google.script.run.withSuccessHandler(function (b64) { if (b64) v.poster = 'data:image/jpeg;base64,' + b64; }).proxyBinary('/proxy-img', { url: url });
                     } else {

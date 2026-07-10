@@ -305,11 +305,15 @@
     <script>
         const VIDEO_ID = "{{id}}";
         const IS_LIVE = "{{is_live_status}}" === "LIVE";
+        const urlParams = new URLSearchParams(window.location.search);
+        const QUALITY = urlParams.get('quality') || '720p';
+        const TOKEN = urlParams.get('token') || localStorage.getItem('yt_token') || '';
+        const DURATION = Number(urlParams.get('duration') || 0);
         const player = document.getElementById('player');
         let mediaSource = new MediaSource();
         let sourceBuffer = null;
         let currentByte = 0;
-        const CHUNK_SIZE = 1 * 1024 * 1024; // 1MB
+        const CHUNK_SIZE = Math.floor(1.5 * 1024 * 1024); // 1.5MB
         let isLoading = false;
         let isStopped = false;
 
@@ -326,24 +330,48 @@
                 const path = img.getAttribute('data-proxy-path');
                 const url = img.getAttribute('data-proxy-url');
                 if (!path || !url || img.dataset.loading) return;
+                if (!url.startsWith('http') || url.includes('/@') || url.includes('/channel/') || url.includes('/user/')) {
+                    img.style.display = 'none';
+                    return;
+                }
                 img.dataset.loading = 'true';
-                google.script.run.withSuccessHandler(base64 => {
-                    if (base64) img.src = 'data:image/jpeg;base64,' + base64;
-                }).proxyBinary(path, { url: url });
+                if (typeof google !== 'undefined' && google && google.script && google.script.run) {
+                    google.script.run.withSuccessHandler(base64 => {
+                        if (base64) img.src = 'data:image/jpeg;base64,' + base64;
+                    }).proxyBinary(path, { url: url });
+                } else {
+                    img.src = path + '?url=' + encodeURIComponent(url);
+                }
             });
         }
 
         function initPlayer() {
             log("Starting Optimized Byte-Range Player...");
+            if (typeof MediaSource === 'undefined' || !MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E, mp4a.40.2"')) {
+                log("MediaSource avc1.42E01E not supported on this browser. Falling back to direct stream URL.");
+                if (typeof google === 'undefined' || !google || !google.script || !google.script.run) {
+                    player.src = `/stream?id=${VIDEO_ID}&quality=${QUALITY}&duration=${DURATION}&token=${TOKEN}`;
+                } else {
+                    log("Please use Chrome or PC for GAS playback if MediaSource is unsupported.");
+                }
+                return;
+            }
+
             player.src = URL.createObjectURL(mediaSource);
 
             mediaSource.addEventListener('sourceopen', () => {
                 log("MediaSource open.");
+                if (DURATION > 0 && !isNaN(DURATION)) {
+                    try { mediaSource.duration = DURATION; } catch(e){}
+                }
                 try {
                     // libx264 Baseline, AAC
                     const codec = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
                     sourceBuffer = mediaSource.addSourceBuffer(codec);
                     sourceBuffer.addEventListener('updateend', () => {
+                        if (DURATION > 0 && !isNaN(DURATION) && isNaN(mediaSource.duration)) {
+                            try { mediaSource.duration = DURATION; } catch(e){}
+                        }
                         isLoading = false;
                         checkBuffer();
                     });
@@ -354,6 +382,69 @@
                     log("Codec error: " + e.message, true);
                 }
             });
+
+            player.addEventListener('seeking', () => {
+                if (!mediaSource || mediaSource.readyState !== 'open') return;
+                const targetSec = player.currentTime;
+                const buffered = player.buffered;
+                for (let i = 0; i < buffered.length; i++) {
+                    if (buffered.start(i) <= targetSec && targetSec <= buffered.end(i)) return;
+                }
+                if (DURATION > 0) {
+                    const estTotal = Math.max(CHUNK_SIZE * 10, Math.floor(DURATION * (QUALITY === '1080p' ? 450000 : QUALITY === '720p' ? 250000 : QUALITY === '480p' ? 140000 : 85000)));
+                    currentByte = Math.max(0, Math.floor((targetSec / DURATION) * estTotal));
+                    log("Seeking to sec: " + targetSec + ", byte: " + currentByte);
+                    if (isLoading) isLoading = false;
+                    fetchNextBytes();
+                }
+            });
+
+            player.addEventListener('ended', () => {
+                log("Ended event triggered. currentTime: " + player.currentTime + " / DURATION: " + DURATION);
+                if (player.seeking || (DURATION > 0 && (DURATION - player.currentTime) > 3)) {
+                    log("Premature ended event mid-stream. Recovering...");
+                    if (!player.seeking && !isLoading) {
+                        fetchNextBytes();
+                    }
+                }
+            });
+        }
+
+        function handleByteResponse(base64) {
+            if (base64 === "RETRY") {
+                log("Backend still converting... retrying in 1s");
+                setTimeout(() => { isLoading = false; fetchNextBytes(); }, 1000);
+                return;
+            }
+            if (!base64 || base64.length < 100) {
+                if (DURATION > 0 && (DURATION - player.currentTime) > 3) {
+                    log("Mid-stream buffer empty (waiting for backend conversion). Retrying in 1s without ending...");
+                    setTimeout(() => { isLoading = false; fetchNextBytes(); }, 1000);
+                    return;
+                }
+                if (IS_LIVE) {
+                    log("Live: No new data yet, retrying in 3s...");
+                    setTimeout(() => { isLoading = false; fetchNextBytes(); }, 3000);
+                } else {
+                    log("Reached End of Stream or empty data.");
+                    isLoading = false;
+                }
+                return;
+            }
+
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+            sourceBuffer.appendBuffer(bytes.buffer);
+            const isFirstChunk = (currentByte === 0);
+            currentByte += binary.length;
+            log(`Appended ${binary.length} bytes (Total: ${currentByte})`);
+            isLoading = false;
+
+            if (isFirstChunk && player.paused) {
+                player.play().catch(e => log("Autoplay blocked by browser policy. User click required."));
+            }
         }
 
         function fetchNextBytes() {
@@ -364,56 +455,53 @@
             const end = start + CHUNK_SIZE;
             log(`Fetching bytes: ${start} - ${end}`);
 
-            google.script.run
-                .withSuccessHandler(base64 => {
-                    if (base64 === "RETRY") {
-                        log("Backend still converting... retrying in 2s");
-                        setTimeout(() => { isLoading = false; fetchNextBytes(); }, 2000);
-                        return;
-                    }
-                    if (!base64 || base64.length < 100) {
-                        if (IS_LIVE) {
-                            log("Live: No new data yet, retrying in 3s...");
-                            setTimeout(() => { isLoading = false; fetchNextBytes(); }, 3000);
-                        } else {
-                            log("Reached End of Stream or empty data.");
-                            isLoading = false;
-                        }
-                        return;
-                    }
-
-                    const binary = atob(base64);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-                    sourceBuffer.appendBuffer(bytes.buffer);
-                    currentByte += binary.length;
-                    log(`Appended ${binary.length} bytes (Total: ${currentByte})`);
+            if (typeof google !== 'undefined' && google && google.script && google.script.run) {
+                google.script.run
+                    .withSuccessHandler(base64 => handleByteResponse(base64))
+                    .withFailureHandler(err => {
+                        log("Fetch failure: " + err, true);
+                        isLoading = false;
+                    })
+                    .proxyVideoBytes(VIDEO_ID, start, end, QUALITY, TOKEN);
+            } else {
+                fetch(`/stream-bytes?id=${VIDEO_ID}&start=${start}&end=${end}&quality=${QUALITY}&token=${TOKEN}`, {
+                    headers: TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}
                 })
-                .withFailureHandler(err => {
+                .then(res => res.status === 404 ? "RETRY" : res.arrayBuffer().then(buf => {
+                    let binary = '';
+                    const bytes = new Uint8Array(buf);
+                    const len = bytes.byteLength;
+                    for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
+                    return btoa(binary);
+                }))
+                .then(base64 => handleByteResponse(base64))
+                .catch(err => {
                     log("Fetch failure: " + err, true);
                     isLoading = false;
-                })
-                .proxyVideoBytes(VIDEO_ID, start, end);
+                });
+            }
         }
 
         function checkBuffer() {
+            if (DURATION > 0 && !isNaN(DURATION) && mediaSource && isNaN(mediaSource.duration)) {
+                try { mediaSource.duration = DURATION; } catch (e) {}
+            }
             if (isLoading || !sourceBuffer || sourceBuffer.updating || mediaSource.readyState !== 'open') return;
 
-            // バッファが60秒分以下なら次を読み込む（停止中も継続）
+            // バッファが90秒分以下なら次を読み込む（停止中も継続）
             const buffered = player.buffered;
             let endInSec = 0;
             if (buffered.length > 0) {
                 endInSec = buffered.end(buffered.length - 1);
             }
 
-            if (endInSec - player.currentTime < 60) {
+            if (endInSec - player.currentTime < 90) {
                 fetchNextBytes();
             }
         }
 
-        // 定期的にバッファをチェックし、停止中もデータを「流し込む」
-        setInterval(checkBuffer, 3000);
+        // 定期的にバッファをチェックし、停止中もどんどんデータを流し込む
+        setInterval(checkBuffer, 1500);
 
 
 

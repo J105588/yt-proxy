@@ -157,8 +157,15 @@ function proxyVideoBytes(id, start, end, quality, token) {
   if (!u) return null;
   const qStr = quality ? `&quality=${encodeURIComponent(quality)}` : '';
   const tStr = token ? `&token=${encodeURIComponent(token)}` : '';
+  const headers = {};
+  if (token) {
+    headers['Authorization'] = 'Bearer ' + token;
+  }
   try {
-    const res = UrlFetchApp.fetch(`${u}/stream-bytes?id=${id}&start=${start}&end=${end}${qStr}${tStr}`, { muteHttpExceptions: true });
+    const res = UrlFetchApp.fetch(`${u}/stream-bytes?id=${id}&start=${start}&end=${end}${qStr}${tStr}`, {
+      headers: headers,
+      muteHttpExceptions: true
+    });
     return res.getResponseCode() === 404 ? "RETRY" : Utilities.base64Encode(res.getBlob().getBytes());
   } catch (e) { return null; }
 }
