@@ -466,6 +466,11 @@ app.get('/api/signup', auth, async (req, res) => {
     res.json({ token, username: newUser.username, role: newUser.role });
 });
 
+app.get(['/health', '/api/health'], (req, res) => {
+    res.status(200).json({ status: 'ok' });
+});
+
+
 app.get('/api/login', async (req, res) => {
     const { user, pass } = req.query;
     if (!user || !pass) return res.status(400).json({ error: 'ユーザー名とパスワードが必要です' });
@@ -1362,7 +1367,7 @@ app.get('/api/channel', auth, async (req, res) => {
             '--dump-json',
             '--flat-playlist',
             '--playlist-start', String(start),
-            '--playlist-end', String(start + 29),
+            '--playlist-end', String(start + 39),
             '--no-warnings',
             ...langArgs
         ], 25000);
@@ -1375,10 +1380,21 @@ app.get('/api/channel', auth, async (req, res) => {
 
         const meta = metaData || results[0] || {};
 
+        let rawTitle = meta.channel || meta.uploader || meta.playlist_channel || meta.playlist_uploader || meta.title || id.replace(/^@+/, '');
+        if (typeof rawTitle === 'string') {
+            rawTitle = rawTitle.replace(/\s*さんのアップロード動画\s*$/i, '');
+            rawTitle = rawTitle.replace(/^Uploads from\s+/i, '');
+            rawTitle = rawTitle.replace(/\s*-\s*動画\s*$/i, '');
+            rawTitle = rawTitle.replace(/\s*-\s*Videos\s*$/i, '');
+        }
+
+        let cleanUploaderId = String(meta.uploader_id || meta.playlist_uploader_id || id).replace(/^@+/, '');
+        let cleanChannelId = String(meta.channel_id || meta.playlist_channel_id || id).replace(/^@+/, '');
+
         let channelInfo = {
-            title: meta.title || meta.playlist_channel || meta.uploader || meta.channel || id.replace('@', ''),
-            uploader_id: meta.uploader_id || meta.playlist_uploader_id || id,
-            channel_id: meta.channel_id || meta.playlist_channel_id || id,
+            title: rawTitle,
+            uploader_id: cleanUploaderId,
+            channel_id: cleanChannelId,
             description: meta.description || meta.playlist_description || "",
             subscriber_count: meta.channel_follower_count || meta.subscriber_count || "非表示",
             avatar: meta.avatar || "",
@@ -1396,13 +1412,34 @@ app.get('/api/channel', auth, async (req, res) => {
             channelInfo.avatar = "https://www.gstatic.com/youtube/media/ytm/images/p2w/profile_avatar.png";
         }
 
-        const videoResults = results.filter(v => v.id && v._type !== 'playlist' && v._type !== 'url' || (v._type === 'url' && !v.url.includes('playlist')));
-        const playlistResults = results.filter(v => v.id && (v._type === 'playlist' || (v._type === 'url' && v.url.includes('playlist'))));
+        const formattedResults = results.map(v => {
+            if (!v || !v.id) return null;
+            return {
+                ...v,
+                uploader: v.uploader || v.channel || channelInfo.title || id.replace('@', ''),
+                uploader_id: v.uploader_id || v.channel_id || channelInfo.uploader_id || channelInfo.channel_id || id,
+                channel: v.channel || v.uploader || channelInfo.title || id.replace('@', ''),
+                channel_id: v.channel_id || v.uploader_id || channelInfo.channel_id || channelInfo.uploader_id || id
+            };
+        }).filter(v => v && /^[a-zA-Z0-9_-]{3,20}$/.test(v.id));
+
+        const videoResults = formattedResults.filter(v => {
+            if (v._type === 'playlist') return false;
+            if (v.url && typeof v.url === 'string' && v.url.includes('playlist')) return false;
+            return true;
+        });
+        const playlistResults = formattedResults.filter(v => {
+            if (v._type === 'playlist') return true;
+            if (v.url && typeof v.url === 'string' && v.url.includes('playlist')) return true;
+            return false;
+        });
+
+        const targetResults = tab === 'playlists' ? playlistResults : videoResults;
 
         res.json({
             channelInfo,
-            results: tab === 'playlists' ? playlistResults : videoResults,
-            next_start: start + 30
+            results: targetResults,
+            next_start: start + targetResults.length
         });
     } catch (e) {
         console.error("[Channel] Error:", e.message);
@@ -1623,20 +1660,28 @@ app.get('/api/video', auth, async (req, res) => {
 
         const info = JSON.parse(mainOut);
         
-        let uploaderIcon = info.uploader_avatar || info.channel_thumbnail || "";
+        let uploaderIcon = info.uploader_avatar || info.channel_thumbnail || info.uploader_icon || "";
         if (!uploaderIcon && Array.isArray(info.thumbnails)) {
-            const avatarThumb = info.thumbnails.find(t => t.id === 'avatar' || (t.url && (t.url.includes('yt3.ggpht.com') || t.url.includes('yt3.googleusercontent.com'))));
+            const avatarThumb = info.thumbnails.find(t => t && (t.id === 'avatar' || t.id === 'avatar_uncropped' || (t.id && t.id.includes('avatar')) || (t.url && (t.url.includes('yt3.ggpht.com') || t.url.includes('yt3.googleusercontent.com')))));
+            if (avatarThumb) uploaderIcon = avatarThumb.url;
+        }
+        if (!uploaderIcon && Array.isArray(info.channel_thumbnails)) {
+            const avatarThumb = info.channel_thumbnails.find(t => t && t.url);
             if (avatarThumb) uploaderIcon = avatarThumb.url;
         }
         if (!uploaderIcon && info.uploader_url && (info.uploader_url.includes('yt3.ggpht.com') || info.uploader_url.includes('yt3.googleusercontent.com') || info.uploader_url.includes('.jpg') || info.uploader_url.includes('.png'))) {
             uploaderIcon = info.uploader_url;
         }
-        if (uploaderIcon && (uploaderIcon.startsWith('https://www.youtube.com/@') || uploaderIcon.startsWith('https://youtube.com/@') || uploaderIcon.includes('/@') || !uploaderIcon.includes('http') || (!uploaderIcon.match(/\.(jpg|jpeg|png|webp|gif)($|\?)/i) && !uploaderIcon.includes('yt3.ggpht.com') && !uploaderIcon.includes('yt3.googleusercontent.com') && !uploaderIcon.includes('nimg.jp')))) {
+        if (uploaderIcon && (uploaderIcon.startsWith('https://www.youtube.com/@') || uploaderIcon.startsWith('https://youtube.com/@') || uploaderIcon.includes('/@') || (!uploaderIcon.match(/\.(jpg|jpeg|png|webp|gif)($|\?)/i) && !uploaderIcon.includes('yt3.ggpht.com') && !uploaderIcon.includes('yt3.googleusercontent.com') && !uploaderIcon.includes('nimg.jp')))) {
             uploaderIcon = "";
         }
+        if (!uploaderIcon) {
+            uploaderIcon = "https://www.gstatic.com/youtube/media/ytm/images/p2w/profile_avatar.png";
+        }
         info.uploader_icon = uploaderIcon;
-        info.channel_url = info.uploader_url || "";
-        info.uploader_url = uploaderIcon || "";
+        info.uploader_avatar = uploaderIcon;
+        info.channel_url = (info.uploader_url && info.uploader_url.includes('youtube.com')) ? info.uploader_url : "";
+        info.uploader_url = uploaderIcon;
 
         // 履歴記録
         recordHistory(req.user, {
@@ -1925,6 +1970,7 @@ app.get('/stream-bytes', async (req, res) => {
     const id = String(req.query.id || "").trim();
     const start = parseInt(req.query.start) || 0;
     const end = parseInt(req.query.end) || 0;
+    const startSec = parseInt(req.query.startSec) || 0;
     
     // トークン検証と 1080p 制限
     const token = req.query.token;
@@ -1936,11 +1982,11 @@ app.get('/stream-bytes', async (req, res) => {
     if (!id || !/^[a-zA-Z0-9_-]{3,20}$/.test(id)) return res.status(400).send("Invalid ID");
 
     const isNico = isNicoId(id);
-    const convKey = isNico ? id : `${id}_${quality}`;
+    const convKey = isNico ? id : (startSec > 0 ? `${id}_${quality}_s${startSec}` : `${id}_${quality}`);
     const tmpPath = path.join(TMP_DIR, `${convKey}.mp4`);
 
     try {
-        await ensureConversion(id, quality);
+        await ensureConversion(id, quality, startSec);
     } catch (e) {
         console.error('Conversion start error:', e.message);
         return res.status(500).end();
@@ -1955,14 +2001,13 @@ app.get('/stream-bytes', async (req, res) => {
             const conv = conversions.get(convKey);
             if (conv && conv.resolvedPath && fs.existsSync(conv.resolvedPath)) {
                 targetPath = conv.resolvedPath;
-            } else {
+            } else if (startSec === 0) {
                 const found = findExistingVideoFile(id, quality);
                 if (found) targetPath = found;
             }
             const currentSize = getFileSize(targetPath);
             const isConverting = conv && conv.proc;
             if (currentSize > start) {
-                // 変換中の場合は極端に小さいチャンク送信（10バイト等）を防ぐため、少なくとも256KBのバッファが溜まるか一定試行回数待機
                 if (!isConverting || currentSize - start >= 256 * 1024 || attempts >= 4) {
                     break;
                 }

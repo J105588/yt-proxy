@@ -1377,13 +1377,12 @@
         function offlineReconnectNow() {
             if (_offlineTimer) { clearTimeout(_offlineTimer); _offlineTimer = null; }
             showOfflineBanner('再接続を試みています...');
-            fetch('/health').then(function (r) {
-                if (r.ok) {
+            api('/health').then(function (r) {
+                if (r && (r.status === 'ok' || r === 'OK' || typeof r === 'object')) {
                     _isOffline = false;
                     _offlineRetryCount = 0;
                     hideOfflineBanner();
                     showToast('サーバーに再接続しました！', 'success');
-                    // checkAuth を再実行してセッションを確認
                     checkAuth();
                 } else {
                     scheduleOfflineRetry();
@@ -1422,6 +1421,7 @@
         var currentMediaSource = null;
         var currentSourceBuffer = null;
         var currentByte = 0;
+        var currentSeekSec = 0;
         var isFetching = false;
         var currentVideoDuration = 0;
         var CHUNK_SIZE = Math.floor(1.5 * 1024 * 1024); // 1.5MB
@@ -1558,6 +1558,7 @@
 
         function logout() {
             localStorage.removeItem('token');
+            localStorage.removeItem('yt_proxy_last_nav_state');
             token = null;
             currentUser = null;
             var dropdown = document.getElementById('user-dropdown');
@@ -1592,7 +1593,16 @@
                 if (v) {
                     nav(v, urlParams.get('id') || '', urlParams.get('q') || '', urlParams.get('tab') || '');
                 } else {
-                    nav('home');
+                    var savedState = null;
+                    try {
+                        var savedStr = localStorage.getItem('yt_proxy_last_nav_state');
+                        if (savedStr) savedState = JSON.parse(savedStr);
+                    } catch (e) {}
+                    if (savedState && savedState.view && savedState.view !== 'login') {
+                        nav(savedState.view, savedState.id || '', savedState.q || '', savedState.tab || '');
+                    } else {
+                        nav('home');
+                    }
                 }
             }).catch(function () { logout(); });
         }
@@ -1648,6 +1658,11 @@
 
             currentView = view;
             lastParams = entry;
+            if (view && view !== 'login') {
+                try {
+                    localStorage.setItem('yt_proxy_last_nav_state', JSON.stringify(entry));
+                } catch (e) {}
+            }
 
             // Update URL
             try {
@@ -1687,6 +1702,11 @@
                 // Navigate without re-pushing
                 currentView = prev.view;
                 lastParams = prev;
+                if (prev && prev.view && prev.view !== 'login') {
+                    try {
+                        localStorage.setItem('yt_proxy_last_nav_state', JSON.stringify(prev));
+                    } catch (e) {}
+                }
                 try {
                     var url = new URL(window.location);
                     url.searchParams.set('view', prev.view);
@@ -1867,6 +1887,15 @@
             restoreScroll('search', '', q);
         }
 
+        function cleanUploaderName(name) {
+            if (!name || typeof name !== 'string') return '\u4e0d\u660e';
+            return name.replace(/^@+/, '').replace(/\s*さんのアップロード動画\s*$/i, '').replace(/^Uploads from\s+/i, '').replace(/\s*-\s*動画\s*$/i, '').replace(/\s*-\s*Videos\s*$/i, '');
+        }
+        function cleanHandleName(handle) {
+            if (!handle || typeof handle !== 'string') return '';
+            return handle.replace(/^@+/, '');
+        }
+
         // ===== Video Card =====
         function createVideoCard(v, isShort) {
             if (!v || !v.id) return '';
@@ -1877,7 +1906,7 @@
             var isMusic = v.isMusic || v.category === 'Music' || (v.uploader && v.uploader.indexOf('Topic') >= 0);
             var musicBadge = isMusic ? '<div class="music-badge"><svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;margin-right:4px;"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>MUSIC</div>' : '';
             var title = h(v.title || '\u7121\u984c');
-            var uploader = h(v.uploader || v.channel || '\u4e0d\u660e');
+            var uploader = h(cleanUploaderName(v.uploader || v.channel));
             var channelId = j(v.uploader_id || v.channel_id || '');
             var uploaderHtml = '';
             if (!isShort && channelId && !isNico) {
@@ -2008,7 +2037,7 @@
                         '<div style="width:168px; height:94px; border-radius:8px; overflow:hidden; background:#222; flex-shrink:0;"><img data-url="' + h(rThumb) + '" style="width:100%;height:100%;object-fit:cover;" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="></div>' +
                         '<div style="flex:1; overflow:hidden;">' +
                         '<div style="font-size:14px; font-weight:500; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.2;">' + h(rv.title || '\u7121\u984c') + '</div>' +
-                        '<div style="color:#aaa; font-size:12px; margin-top:6px;">' + h(rv.uploader || rv.channel || '\u4e0d\u660e') + '</div>' +
+                        '<div style="color:#aaa; font-size:12px; margin-top:6px;">' + h(cleanUploaderName(rv.uploader || rv.channel)) + '</div>' +
                         '<div style="color:#aaa; font-size:11px; margin-top:2px;">' + (rv.view_count ? Number(rv.view_count).toLocaleString() + ' \u56de\u8996\u8074' : '') + '</div>' +
                         '</div></div>';
                 }).join('');
@@ -2020,6 +2049,14 @@
             var posterUrl = isNico ? (info.thumbnail || '') : ('https://i.ytimg.com/vi/' + j(id) + '/maxresdefault.jpg');
             currentVideoDuration = Number(info.duration || 0);
 
+            var uIcon = info.uploader_icon || info.uploader_avatar || info.channel_thumbnail || info.avatar || '';
+            if (!uIcon && info.uploader_url && (info.uploader_url.indexOf('yt3.') >= 0 || info.uploader_url.indexOf('ggpht.com') >= 0 || info.uploader_url.indexOf('.jpg') >= 0 || info.uploader_url.indexOf('.png') >= 0)) {
+                uIcon = info.uploader_url;
+            }
+            if (!uIcon || uIcon.indexOf('youtube.com/@') >= 0 || uIcon.indexOf('/@') >= 0) {
+                uIcon = 'https://www.gstatic.com/youtube/media/ytm/images/p2w/profile_avatar.png';
+            }
+
             content.innerHTML =
                 '<div style="margin-bottom:16px; display:flex; align-items:center; height:48px;">' + backBtnHtml + '</div>' +
                 '<div class="video-container">' +
@@ -2028,10 +2065,10 @@
                 '<h1 style="font-size:20px; margin:20px 0 8px;">' + h(info.title || '\u7121\u984c') + '</h1>' +
                 '<div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">' +
                 '<div style="width:40px; height:40px; border-radius:50%; overflow:hidden; background:#333; flex-shrink:0; cursor:pointer;" onclick="nav(\'channel\',\'' + vChannelId + '\')">' +
-                '<img data-url="' + h(info.uploader_url || '') + '" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" style="width:100%;height:100%;object-fit:cover;">' +
+                '<img data-url="' + h(uIcon) + '" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" style="width:100%;height:100%;object-fit:cover;">' +
                 '</div>' +
                 '<div style="flex:1;">' +
-                '<b style="cursor:pointer;" onclick="nav(\'channel\',\'' + vChannelId + '\')">' + h(info.uploader || '\u4e0d\u660e') + '</b>' +
+                '<b style="cursor:pointer;" onclick="nav(\'channel\',\'' + vChannelId + '\')">' + h(cleanUploaderName(info.uploader)) + '</b>' +
                 '<div style="font-size:12px; color:#aaa;">' + (info.view_count || 0).toLocaleString() + ' \u56de\u8996\u8074</div>' +
                 '</div>' +
                 '<select id="quality-select" style="background:#272727; color:#fff; border:1px solid #444; padding:6px 12px; border-radius:18px; font-weight:600; cursor:pointer; outline:none;' + (isNico ? 'display:none;' : '') + '">' +
@@ -2210,8 +2247,12 @@
                 });
             }
 
-            if (typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined') {
-                initMSEPlayer(player, id, 0, currentVideoDuration);
+            if (typeof google !== 'undefined' && google.script && google.script.run) {
+                if (typeof MediaSource !== 'undefined') {
+                    initMSEPlayer(player, id, 0, currentVideoDuration);
+                } else {
+                    showToast('お使いの環境はGASストリーミング再生(MSE)に対応していません。ダウンロード機能をご利用ください。', 'error');
+                }
             } else {
                 player.src = getTunnelUrl() + '/stream?id=' + id + '&quality=' + currentQuality + '&duration=' + currentVideoDuration + '&token=' + encodeURIComponent(token);
                 player.play().catch(function(e) { console.warn("Autoplay required user click:", e); });
@@ -2250,7 +2291,7 @@
 
                             var videoTitle = info.title ? info.title.replace(/[\\/:*?"<>|]/g, '_') : id;
 
-                            if (isGas && typeof google !== 'undefined' && google.script && google.script.run) {
+                            if (typeof google !== 'undefined' && google.script && google.script.run) {
                                 google.script.run
                                     .withSuccessHandler(function (res) {
                                         if (res && res.success && res.base64Data) {
@@ -2320,6 +2361,7 @@
                 clearInterval(bufferInterval);
                 bufferInterval = null;
             }
+            currentSeekSec = (initialTime && !isNaN(initialTime) && Number(initialTime) > 0) ? Math.floor(Number(initialTime)) : 0;
             currentMediaSource = new MediaSource();
             player.src = URL.createObjectURL(currentMediaSource);
             currentByte = 0;
@@ -2337,8 +2379,9 @@
                         isFetching = false;
                         checkBuffer(player, id, duration);
                     });
-                    if (initialTime > 0 && player) {
-                        player.currentTime = initialTime;
+                    if (currentSeekSec > 0) {
+                        try { currentSourceBuffer.timestampOffset = currentSeekSec; } catch (e) {}
+                        if (player) player.currentTime = currentSeekSec;
                     }
                     fetchNextChunk(id);
                 } catch (e) { console.error("MSE Init Error:", e); }
@@ -2346,16 +2389,19 @@
             if (player) {
                 player.addEventListener('seeking', function onMseSeek() {
                     if (!currentMediaSource || currentMediaSource.readyState !== 'open') return;
-                    var targetSec = player.currentTime;
+                    var targetSec = Math.floor(player.currentTime);
                     var buffered = player.buffered;
                     for (var i = 0; i < buffered.length; i++) {
-                        if (buffered.start(i) <= targetSec && targetSec <= buffered.end(i)) return;
+                        if (buffered.start(i) <= player.currentTime && player.currentTime <= buffered.end(i)) return;
                     }
-                    if (duration && duration > 0) {
-                        var estTotal = Math.max(CHUNK_SIZE * 10, Math.floor(duration * (currentQuality === '1080p' ? 450000 : currentQuality === '720p' ? 250000 : currentQuality === '480p' ? 140000 : 85000)));
-                        currentByte = Math.max(0, Math.floor((targetSec / duration) * estTotal));
-                        console.log("MSE Seeking to sec: " + targetSec + ", byte: " + currentByte);
-                        if (isFetching) { isFetching = false; }
+                    if (duration && duration > 0 && Math.abs(targetSec - currentSeekSec) > 2) {
+                        console.log("MSE Seeking to sec: " + targetSec + " (Resetting stream from targetSec)");
+                        currentSeekSec = targetSec;
+                        currentByte = 0;
+                        isFetching = false;
+                        if (currentSourceBuffer && !currentSourceBuffer.updating) {
+                            try { currentSourceBuffer.timestampOffset = targetSec; } catch (e) {}
+                        }
                         fetchNextChunk(id, 0);
                     }
                 });
@@ -2367,10 +2413,13 @@
 
         function fetchNextChunk(id, retryCount) {
             if (!retryCount) retryCount = 0;
-            if (isFetching || !currentSourceBuffer || currentMediaSource.readyState !== 'open') return;
+            if (isFetching || !currentSourceBuffer || !currentMediaSource || currentMediaSource.readyState !== 'open') return;
+            var vPlayer = document.getElementById('v-player');
+            if (!vPlayer || vPlayer.error) return;
             isFetching = true;
             var start = currentByte;
             var end = start + CHUNK_SIZE;
+            var seekSec = currentSeekSec || 0;
             google.script.run
                 .withSuccessHandler(function (base64) {
                     if (base64 === "RETRY") {
@@ -2380,9 +2429,13 @@
                         }, 1000);
                         return;
                     }
+                    var p = document.getElementById('v-player');
+                    if (!p || p.error || !currentSourceBuffer || !currentMediaSource || currentMediaSource.readyState !== 'open') {
+                        isFetching = false;
+                        return;
+                    }
                     if (!base64 || base64.length < 10) {
                         isFetching = false;
-                        var p = document.getElementById('v-player');
                         var remSec = p ? (currentVideoDuration - p.currentTime) : 999;
                         if (currentVideoDuration > 0 && remSec > 3) {
                             console.log("Buffer empty mid-stream (waiting for backend conversion). Retrying in 1s without endOfStream...");
@@ -2413,12 +2466,34 @@
                     var binary = atob(base64);
                     var bytes = new Uint8Array(binary.length);
                     for (var k = 0; k < binary.length; k++) bytes[k] = binary.charCodeAt(k);
-                    currentSourceBuffer.appendBuffer(bytes.buffer);
-                    var isFirst = (currentByte === 0);
-                    currentByte += binary.length;
-                    if (isFirst && player && player.paused) {
-                        player.play().catch(function(e) { console.warn("Autoplay required user click:", e); });
-                    }
+
+                    var appendSafe = function() {
+                        var curP = document.getElementById('v-player');
+                        if (!curP || curP.error || !currentSourceBuffer || !currentMediaSource || currentMediaSource.readyState !== 'open') {
+                            isFetching = false;
+                            return;
+                        }
+                        if (currentSourceBuffer.updating) {
+                            setTimeout(appendSafe, 50);
+                            return;
+                        }
+                        try {
+                            if (currentByte === 0 && currentSeekSec > 0) {
+                                try { currentSourceBuffer.timestampOffset = currentSeekSec; } catch (e) {}
+                            }
+                            currentSourceBuffer.appendBuffer(bytes.buffer);
+                            var isFirst = (currentByte === 0);
+                            currentByte += binary.length;
+                            isFetching = false;
+                            if (isFirst && curP && curP.paused) {
+                                curP.play().catch(function(e) { console.warn("Autoplay required user click:", e); });
+                            }
+                        } catch (e) {
+                            console.error("appendBuffer error:", e);
+                            isFetching = false;
+                        }
+                    };
+                    appendSafe();
                 })
                 .withFailureHandler(function (err) {
                     console.error("fetchNextChunk failure:", err);
@@ -2432,20 +2507,22 @@
                         isFetching = false;
                     }
                 })
-                .proxyVideoBytes(id, start, end, currentQuality, token);
+                .proxyVideoBytes(id, start, end, currentQuality, token, seekSec);
         }
 
         function checkBuffer(player, id, duration) {
-            if (player.ended) return;
+            var p = player || document.getElementById('v-player');
+            if (!p || p.error || p.ended) return;
             if (duration && !isNaN(duration) && duration > 0 && currentMediaSource && isNaN(currentMediaSource.duration)) {
                 try { currentMediaSource.duration = Number(duration); } catch (e) {}
             }
-            if (isFetching || !currentSourceBuffer || currentSourceBuffer.updating || currentMediaSource.readyState !== 'open') return;
-            var buffered = player.buffered;
-            var endInSec = 0;
-            if (buffered.length > 0) endInSec = buffered.end(buffered.length - 1);
-            // バッファが90秒未満のときまたは停止中でもバッファが少ない時は次のチャンクをどんどん取得して先読みする
-            if (endInSec - player.currentTime < 90) fetchNextChunk(id);
+            if (isFetching || !currentSourceBuffer || currentSourceBuffer.updating || !currentMediaSource || currentMediaSource.readyState !== 'open') return;
+            try {
+                var buffered = p.buffered;
+                var endInSec = 0;
+                if (buffered && buffered.length > 0) endInSec = buffered.end(buffered.length - 1);
+                if (endInSec - p.currentTime < 90) fetchNextChunk(id);
+            } catch (e) {}
         }
 
         // ===== Channel =====
@@ -2475,12 +2552,22 @@
             var results = res.results || [];
             var jid = j(id);
 
+            var cleanTitle = cleanUploaderName(info.title || id);
+            var cleanHandle = cleanHandleName(info.uploader_id || id);
+            var cleanCId = cleanHandleName(info.channel_id || id);
+
             var bannerHtml = info.banner
                 ? '<img data-url="' + h(info.banner) + '" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=">'
                 : '<div style="width:100%;height:100%;background:linear-gradient(90deg,#111,#222);"></div>';
 
             var gridHtml = results.length > 0
-                ? results.map(function (v) { return tab === 'playlists' ? createPlaylistCard(v) : createVideoCard(v, tab === 'shorts'); }).join('')
+                ? results.map(function (v) {
+                    if (!v.uploader && !v.channel) {
+                        v.uploader = cleanTitle;
+                        v.uploader_id = cleanHandle;
+                    }
+                    return tab === 'playlists' ? createPlaylistCard(v) : createVideoCard(v, tab === 'shorts');
+                }).join('')
                 : '<p style="padding:20px; color:#aaa;">\u8a72\u5f53\u3059\u308b\u30b3\u30f3\u30c6\u30f3\u30c4\u304c\u3042\u308a\u307e\u305b\u3093</p>';
 
             var isNicoChannel = id && (id.indexOf('ch') === 0 || /^\d+$/.test(id));
@@ -2515,8 +2602,8 @@
                 '<div class="channel-meta-area">' +
                 '<div class="channel-avatar"><img data-url="' + h(info.avatar || '') + '" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="></div>' +
                 '<div class="channel-info" style="flex:1;">' +
-                '<h1 style="font-size:36px; font-weight:900; margin:0 0 4px; letter-spacing:-0.5px;">' + h(info.title || id) + '</h1>' +
-                '<p style="color:var(--yt-text-dim); margin:0; font-size:14px; font-weight:500;">@' + h(info.uploader_id || id) + ' \u2022 \u30c1\u30e3\u30f3\u30cd\u30eb\u767b\u9332\u8005\u6570 ' + cSubCount + '</p>' +
+                '<h1 style="font-size:36px; font-weight:900; margin:0 0 4px; letter-spacing:-0.5px;">' + h(cleanTitle) + '</h1>' +
+                '<p style="color:var(--yt-text-dim); margin:0; font-size:14px; font-weight:500;">@' + h(cleanHandle) + ' \u2022 \u30c1\u30e3\u30f3\u30cd\u30eb\u767b\u9332\u8005\u6570 ' + cSubCount + '</p>' +
                 '<div style="margin-top:12px; font-size:14px; color:var(--yt-text-dim); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; max-width:600px;">' + cDesc + '</div>' +
                 '<div style="display:flex; gap:12px; margin-top:20px;">' +
                 '<button class="btn" style="width:auto; padding:0 24px; height:36px; border-radius:36px; background:#fff; color:#000; font-weight:600;">\u30c1\u30e3\u30f3\u30cd\u30eb\u767b\u9332</button>' +
@@ -2534,8 +2621,8 @@
                 '<div style="white-space:pre-wrap; font-size:14px; line-height:1.6; color:#ddd;">' + formatDescriptionHtml(info.description || '\u306a\u3057', isNicoDesc) + '</div>' +
                 '<hr style="border:none; border-top:1px solid #444; margin:24px 0;">' +
                 '<div style="font-size:14px; color:#aaa;">' +
-                '<p>\u30cf\u30f3\u30c9\u30eb: @' + h(info.uploader_id || '') + '</p>' +
-                '<p>\u30c1\u30e3\u30f3\u30cd\u30ebID: ' + h(info.channel_id || '') + '</p>' +
+                '<p>\u30cf\u30f3\u30c9\u30eb: @' + h(cleanHandle) + '</p>' +
+                '<p>\u30c1\u30e3\u30f3\u30cd\u30ebID: ' + h(cleanCId) + '</p>' +
                 '<p>\u767b\u9332\u8005\u6570: ' + cSubCount + '</p>' +
                 '</div>' +
                 '</div></div>';
@@ -2563,6 +2650,11 @@
                 var grid = document.getElementById('channel-grid');
                 if (grid) {
                     var html = results.map(function (v) {
+                        if (!v.uploader && !v.channel) {
+                            var titleElem = document.querySelector('.channel-info h1');
+                            v.uploader = titleElem ? titleElem.textContent : id;
+                            v.uploader_id = id;
+                        }
                         return tab === 'playlists' ? createPlaylistCard(v) : createVideoCard(v, tab === 'shorts');
                     }).join('');
                     grid.insertAdjacentHTML('beforeend', html);
@@ -2656,8 +2748,12 @@
             };
             player.addEventListener('loadedmetadata', onMetadataLoaded);
 
-            if (typeof google !== 'undefined' && google.script && google.script.run && typeof MediaSource !== 'undefined') {
-                initMSEPlayer(player, videoId, currentTime, currentVideoDuration);
+            if (typeof google !== 'undefined' && google.script && google.script.run) {
+                if (typeof MediaSource !== 'undefined') {
+                    initMSEPlayer(player, videoId, currentTime, currentVideoDuration);
+                } else {
+                    showToast('お使いの環境はGASストリーミング再生(MSE)に対応していません。ダウンロード機能をご利用ください。', 'error');
+                }
             } else {
                 player.src = getTunnelUrl() + '/stream?id=' + videoId + '&quality=' + newQuality + '&duration=' + currentVideoDuration + '&token=' + encodeURIComponent(token);
             }

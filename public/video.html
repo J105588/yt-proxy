@@ -313,6 +313,7 @@
         let mediaSource = new MediaSource();
         let sourceBuffer = null;
         let currentByte = 0;
+        let currentSeekSec = Number(urlParams.get('t') || 0);
         const CHUNK_SIZE = Math.floor(1.5 * 1024 * 1024); // 1.5MB
         let isLoading = false;
         let isStopped = false;
@@ -377,6 +378,10 @@
                     });
 
                     // 最初のチャンクをフェッチ
+                    if (currentSeekSec > 0) {
+                        try { sourceBuffer.timestampOffset = currentSeekSec; } catch (e) {}
+                        if (player) player.currentTime = currentSeekSec;
+                    }
                     fetchNextBytes();
                 } catch (e) {
                     log("Codec error: " + e.message, true);
@@ -385,16 +390,19 @@
 
             player.addEventListener('seeking', () => {
                 if (!mediaSource || mediaSource.readyState !== 'open') return;
-                const targetSec = player.currentTime;
+                const targetSec = Math.floor(player.currentTime);
                 const buffered = player.buffered;
                 for (let i = 0; i < buffered.length; i++) {
-                    if (buffered.start(i) <= targetSec && targetSec <= buffered.end(i)) return;
+                    if (buffered.start(i) <= player.currentTime && player.currentTime <= buffered.end(i)) return;
                 }
-                if (DURATION > 0) {
-                    const estTotal = Math.max(CHUNK_SIZE * 10, Math.floor(DURATION * (QUALITY === '1080p' ? 450000 : QUALITY === '720p' ? 250000 : QUALITY === '480p' ? 140000 : 85000)));
-                    currentByte = Math.max(0, Math.floor((targetSec / DURATION) * estTotal));
-                    log("Seeking to sec: " + targetSec + ", byte: " + currentByte);
+                if (DURATION > 0 && Math.abs(targetSec - currentSeekSec) > 2) {
+                    log("Seeking to sec: " + targetSec + " (Resetting stream from targetSec)");
+                    currentSeekSec = targetSec;
+                    currentByte = 0;
                     if (isLoading) isLoading = false;
+                    if (sourceBuffer && !sourceBuffer.updating) {
+                        try { sourceBuffer.timestampOffset = targetSec; } catch (e) {}
+                    }
                     fetchNextBytes();
                 }
             });
@@ -436,6 +444,9 @@
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
+            if (currentByte === 0 && currentSeekSec > 0) {
+                try { sourceBuffer.timestampOffset = currentSeekSec; } catch (e) {}
+            }
             sourceBuffer.appendBuffer(bytes.buffer);
             const isFirstChunk = (currentByte === 0);
             currentByte += binary.length;
@@ -453,7 +464,8 @@
 
             const start = currentByte;
             const end = start + CHUNK_SIZE;
-            log(`Fetching bytes: ${start} - ${end}`);
+            const seekSec = currentSeekSec || 0;
+            log(`Fetching bytes: ${start} - ${end} (seekSec: ${seekSec})`);
 
             if (typeof google !== 'undefined' && google && google.script && google.script.run) {
                 google.script.run
@@ -462,9 +474,9 @@
                         log("Fetch failure: " + err, true);
                         isLoading = false;
                     })
-                    .proxyVideoBytes(VIDEO_ID, start, end, QUALITY, TOKEN);
+                    .proxyVideoBytes(VIDEO_ID, start, end, QUALITY, TOKEN, seekSec);
             } else {
-                fetch(`/stream-bytes?id=${VIDEO_ID}&start=${start}&end=${end}&quality=${QUALITY}&token=${TOKEN}`, {
+                fetch(`/stream-bytes?id=${VIDEO_ID}&start=${start}&end=${end}&quality=${QUALITY}&token=${TOKEN}&startSec=${seekSec}`, {
                     headers: TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}
                 })
                 .then(res => res.status === 404 ? "RETRY" : res.arrayBuffer().then(buf => {

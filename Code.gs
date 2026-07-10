@@ -152,17 +152,18 @@ function proxyVideoChunk(id, ss, t) {
   } catch (e) { return null; }
 }
 
-function proxyVideoBytes(id, start, end, quality, token) {
+function proxyVideoBytes(id, start, end, quality, token, startSec) {
   const u = getUrl();
   if (!u) return null;
   const qStr = quality ? `&quality=${encodeURIComponent(quality)}` : '';
   const tStr = token ? `&token=${encodeURIComponent(token)}` : '';
+  const sSecStr = (startSec && Number(startSec) > 0) ? `&startSec=${Number(startSec)}` : '';
   const headers = {};
   if (token) {
     headers['Authorization'] = 'Bearer ' + token;
   }
   try {
-    const res = UrlFetchApp.fetch(`${u}/stream-bytes?id=${id}&start=${start}&end=${end}${qStr}${tStr}`, {
+    const res = UrlFetchApp.fetch(`${u}/stream-bytes?id=${id}&start=${start}&end=${end}${qStr}${tStr}${sSecStr}`, {
       headers: headers,
       muteHttpExceptions: true
     });
