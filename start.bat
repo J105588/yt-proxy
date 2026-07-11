@@ -5,6 +5,17 @@ cd /d "%~dp0"
 setlocal enabledelayedexpansion
 title YT-Proxy-Maintenance-Loop
 
+if exist stop.trigger del /f /q stop.trigger >nul 2>&1
+if exist stopped.flag del /f /q stopped.flag >nul 2>&1
+
+:main_loop
+cls
+echo ======================================================
+echo   YT Proxy Maintenance Loop Starting...
+echo   Current Time: %date% %time%
+echo   * Press Ctrl+C to stop or run "stop.bat"
+echo ======================================================
+
 rem Load configuration from .env file
 if not exist .env (
     echo [!] .env file not found. Please create it based on .env.example.
@@ -20,18 +31,7 @@ for /f "usebackq tokens=*" %%i in (".env") do (
     )
 )
 if not defined PORT set PORT=3000
-set KEY=%GAS_KEY%
-
-if exist stop.trigger del /f /q stop.trigger >nul 2>&1
-if exist stopped.flag del /f /q stopped.flag >nul 2>&1
-
-:main_loop
-cls
-echo ======================================================
-echo   YT Proxy Maintenance Loop Starting...
-echo   Current Time: %date% %time%
-echo   * Press Ctrl+C to stop or run "stop.bat"
-echo ======================================================
+set KEY=!GAS_KEY!
 
 echo [1/5] Cleaning up old processes...
 rem Kill processes holding port !PORT!
@@ -56,11 +56,13 @@ start /b "" .\cloudflared.exe tunnel --url http://localhost:!PORT! > tunnel.log 
 echo [3/5] Waiting for URL (max 60s)...
 
 set WAIT_COUNT=0
+set "NEW_URL="
 :wait_loop
 if exist stop.trigger goto do_stop
 powershell -NoProfile -Command "Start-Sleep -Seconds 2"
 if exist stop.trigger goto do_stop
 
+set "NEW_URL="
 node extract.js > temp_url.txt
 set /p NEW_URL=<temp_url.txt
 if "!NEW_URL!"=="" (
@@ -91,7 +93,7 @@ echo [4/5] Notifying GAS of the new URL...
 set RETRY_COUNT=1
 :notify_loop
 if exist stop.trigger goto do_stop
-powershell -NoProfile -Command "try { $res = Invoke-RestMethod -Uri '%GAS_URL%' -Method Post -Body @{url='!NEW_URL!'; key='%KEY%'}; if ($res -eq 'OK') { exit 0 } else { exit 1 } } catch { exit 1 }"
+node notify_gas.js "!NEW_URL!"
 if errorlevel 1 (
     echo [!] GAS notification failed [Attempt !RETRY_COUNT!]. Retrying in 5s...
     set /a RETRY_COUNT+=1

@@ -2,14 +2,22 @@ const KEY = "jH4wcTyjsrmQyPdJtkdxsXoQ";
 const getUrl = () => PropertiesService.getScriptProperties().getProperty('URL');
 
 function doPost(e) {
-  if (e.parameter.key === KEY) {
+  if (e && e.parameter && e.parameter.key === KEY && e.parameter.url) {
     PropertiesService.getScriptProperties().setProperty('URL', e.parameter.url);
     return ContentService.createTextOutput("OK");
   }
 }
 
 function doGet(e) {
-  if (e.parameter.action === 'download') {
+  if (e && e.parameter && (e.parameter.action === 'updateUrl' || (e.parameter.key === KEY && e.parameter.url))) {
+    if (e.parameter.key === KEY && e.parameter.url) {
+      PropertiesService.getScriptProperties().setProperty('URL', e.parameter.url);
+      return ContentService.createTextOutput("OK");
+    } else {
+      return ContentService.createTextOutput("Invalid Key or URL");
+    }
+  }
+  if (e && e.parameter && e.parameter.action === 'download') {
     try {
       const id = e.parameter.id;
       const quality = e.parameter.quality || '480p';
